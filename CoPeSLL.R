@@ -9,7 +9,8 @@ rm(list=ls()) # Clears workspace
 install.packages("renv")
 #renv::init()
 
-PKG <- c("googledrive","tidyr","purrr", "sf", "tmap", "raster", "rgdal", "exactextractr","ggplot2","gargle", "s2","dplyr")
+PKG <- c("googledrive","tidyr","purrr", "sf", "tmap", "raster", "patchwork",
+         "rgdal", "exactextractr","ggplot2","gargle", "s2","dplyr","RColorBrewer")
 
 for (p in PKG) {
   if(!require(p,character.only = TRUE)) {  
@@ -35,7 +36,7 @@ file.remove("Data.zip")
 setwd("..")
 rm(files, folder, folder_url, dl)
 
-#ESI
+## ESI
 ESI<-st_read("Data/ESILRIMA.gpkg")
 ESI<-ESI[,c("ESI","geom")]
 ESI$length<-st_length(ESI)
@@ -79,7 +80,7 @@ ESI$TOWN<-as.factor(ESI$TOWN)
 
 ESIsum<-ESI %>% st_drop_geometry() %>% # If you don't drop geometry, takes forever 
   group_by(TOWN) %>% 
-  summarise(sum(RockyShore),sum(SandyBeach),sum(Marshes),sum(Armored),sum(TidalFlat))
+  summarise(sum(RockyShore),sum(SandyBeach),sum(Marshes),sum(Armored),sum(TidalFlat)) # Sum length (meters)
 
 ESIsum$total<-ESIsum$`sum(RockyShore)`+ESIsum$`sum(SandyBeach)`+ESIsum$`sum(Marshes)`+ESIsum$`sum(Armored)`+ESIsum$`sum(TidalFlat)`
 
@@ -91,7 +92,7 @@ ESIp$Marshes<-round((ESIp$`sum(Marshes)`/ESIp$total)*100,1)
 ESIp$Armored<-round((ESIp$`sum(Armored)`/ESIp$total)*100,1)
 ESIp$TidalFlat<-round((ESIp$`sum(TidalFlat)`/ESIp$total)*100,1)
 
-ESIp$totalkm<-round(ESIp$total/1000,1)
+ESIp$totalkm<-round(ESIp$total/1000,1) # Total length kilometers
 
 #ESIp$geom<-NULL
 ESIp<-as.data.frame(ESIp)
@@ -100,6 +101,7 @@ write.csv(ESIp,"ESIp.csv")
 
 ## Boston example
 bos<-muni %>% filter(TOWN=="BOSTON")
+dc<-st_read("Data/DC2019ESILRIMA0_002DD.gpkg")
 ESI2<-st_read("Data/ESILRIMA.gpkg")
 ESI2<-separate(ESI2,ESI,c("I1","I2","I3"),"/",convert = TRUE)
 ESI2$I1<-ifelse(ESI2$I1 %in% c("1A","2A","2B","6A","8A","8D"),"Rocky Shore",
@@ -120,14 +122,66 @@ ESI2$I3<-ifelse(ESI2$I3 %in% c("1A","2A","2B","6A","8A","8D"),"Rocky Shore",
 
 
 ESI2<-st_transform(ESI2,st_crs(muni))
+dc<-st_transform(dc,st_crs(muni))
 
 bos_c<-st_bbox(bos)
+bos_c_sf<-st_as_sfc(bos_c) # Bounding box to sf object
 
-# Need consistent colors across I1, I2, I3
-ggplot() +
+dc2<-st_intersection(dc,bos_c_sf) # Extracting only cell data in the plot domain for quantile id
+
+# ESI shoreline types
+cols1 <- c("Armored" = "black", "Rocky Shore" = "gray", "Marsh" = "darkgreen", "Sandy Beach" = "tan", "Tidal Flat" = "lightblue") # Consistent colors across I1, I2, I3
+a<-ggplot() +
   #geom_sf(data = muni, color = "grey",fill = "white") +
-  geom_sf_label(data = muni, aes(label = TOWN)) +
   geom_sf(data = ESI2, aes(color = I1), linewidth=1) +
+  scale_color_manual(values = cols1) +
   geom_sf(data = ESI2 %>% drop_na(I2), aes(color = I2), linewidth=1, linetype = "dotted") +
+  scale_color_manual(values = cols1, name = "Shoreline Type") +
+  geom_sf_label(data = muni, aes(label = TOWN)) +
   coord_sf(xlim = c(bos_c[1],bos_c[3]), ylim = c(bos_c[2],bos_c[4])) + 
   theme_minimal()
+
+# Cell phone density
+getPalette<-colorRampPalette(brewer.pal(9, "Blues")) # function, change if different palette is desired
+cols<-getPalette(5) 
+scales::show_col(cols)
+#labs<-expression(paste("10"^"9"),paste("10"^"8"),paste("10"^"7"),paste("-10"^"7"),paste("-10"^"8"),paste("-10"^"9"),paste("-10"^"10"))
+colscale<-unname(quantile(dc2$DC_YR, probs = seq(0, 1, 1/5)))
+labs<-paste(paste(seq(0, 100, 20),"%",sep=""), paste(seq(20, 120, 20),"%",sep=""), sep=" - ")
+
+dc$DC_YR_f<-cut(dc$DC_YR,breaks = colscale)
+
+#cols[4]<-cols[1]<-"#FFFFFF" # Manually adding another bin for labels at the ends
+
+b<-ggplot() +
+  #geom_sf(data = muni, color = "grey",fill = "white") +
+  # scale_color_manual(values = cols) +
+  # geom_sf(data = ESI2 %>% drop_na(I2), aes(color = I2), linewidth=1, linetype = "dotted") +
+  # scale_color_manual(values = cols, name = "Shoreline Type") +
+  geom_sf(data = dc %>% drop_na(), aes(color=DC_YR_f), alpha = 0.5) +
+  scale_color_manual(values = cols, drop = TRUE, labels = labs, name = "Quintiles") +
+  geom_sf(data = ESI2, linewidth=1) +
+  geom_sf_label(data = muni, aes(label = TOWN)) +
+  coord_sf(xlim = c(bos_c[1],bos_c[3]), ylim = c(bos_c[2],bos_c[4])) + 
+  theme_minimal()
+
+a + b + plot_layout(ncol = 1)
+
+dir.create(file.path('Figures'), recursive = TRUE)
+
+ggsave("./Figures/Fig1.png", device = "png", width = 8.5, height = 11, units = "in", dpi = 300)
+
+## Proportions of shoreline type and cellphone data density (using data summarized by MA towns from above)
+# Shoreline type
+ESIp %>% summarise("Rocky Shore (km)" = sum(`sum(RockyShore)`/1000, na.rm = TRUE),
+                   "Sandy Beach (km)" = sum(`sum(SandyBeach)`/1000, na.rm = TRUE),
+                   "Marshes (km)" = sum(`sum(Marshes)`/1000, na.rm = TRUE),
+                   "Armored (km)" = sum(`sum(Armored)`/1000, na.rm = TRUE),
+                   "Tidal Flat (km)" = sum(`sum(TidalFlat)`/1000, na.rm = TRUE)) %>% 
+  mutate("Total Length (km)" = `Rocky Shore (km)` + `Sandy Beach (km)` + `Marshes (km)` + `Armored (km)` + `Tidal Flat (km)`) %>% 
+  mutate("Rocky Shore (%)" = round(`Rocky Shore (km)`/`Total Length (km)`,3)*100,
+         "Sandy Beach (%)" = round(`Sandy Beach (km)`/`Total Length (km)`,3)*100,
+         "Marshes (%)" = round(`Marshes (km)`/`Total Length (km)`,3)*100,
+         "Armored (%)" = round(`Armored (km)`/`Total Length (km)`,3)*100,
+         "Tidal Flat (%)" = round(`Tidal Flat (km)`/`Total Length (km)`,3)*100)
+# Cellphone data density
