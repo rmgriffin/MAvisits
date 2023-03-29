@@ -184,4 +184,40 @@ ESIp %>% summarise("Rocky Shore (km)" = sum(`sum(RockyShore)`/1000, na.rm = TRUE
          "Marshes (%)" = round(`Marshes (km)`/`Total Length (km)`,3)*100,
          "Armored (%)" = round(`Armored (km)`/`Total Length (km)`,3)*100,
          "Tidal Flat (%)" = round(`Tidal Flat (km)`/`Total Length (km)`,3)*100)
-# Cellphone data density
+
+# Cellphone data density (nearest cell data point, could use a buffered approach too)
+ESIma<-st_join(ESI2,muni,model ="closed")
+ESIma<-ESIma %>% drop_na(TOWN)
+system.time(index<-st_nearest_feature(ESIma, dc)) # Identifying index position of nearest cell data point
+dcma<-dc %>% slice(index) %>% select(DC_YR) %>% st_drop_geometry() # Only nearest cell data points
+ESIma<-cbind(ESIma,dcma)
+ESIma$types<-ifelse(is.na(ESIma$I1),0,1)+ifelse(is.na(ESIma$I2),0,1)+ifelse(is.na(ESIma$I3),0,1) # Number of ESI types per segment
+
+ESIma<-ESIma %>% rowwise() %>% # Divides visits equally among types if more than one is present
+  mutate("Rocky Shore Visits" = sum(DC_YR[I1=="Rocky Shore"], DC_YR[I2=="Rocky Shore"], DC_YR[I3=="Rocky Shore"], na.rm = TRUE)/types,
+         "Sandy Beach Visits" = sum(DC_YR[I1=="Sandy Beach"], DC_YR[I2=="Sandy Beach"], DC_YR[I3=="Sandy Beach"], na.rm = TRUE)/types,
+         "Marsh Visits" = sum(DC_YR[I1=="Marsh"], DC_YR[I2=="Marsh"], DC_YR[I3=="Marsh"], na.rm = TRUE)/types,
+         "Armored Visits" = sum(DC_YR[I1=="Armored"], DC_YR[I2=="Armored"], DC_YR[I3=="Armored"], na.rm = TRUE)/types,
+         "Tidal Flat Visits" = sum(DC_YR[I1=="Tidal Flat"], DC_YR[I2=="Tidal Flat"], DC_YR[I3=="Tidal Flat"], na.rm = TRUE)/types)
+
+ESIma %>% as.data.frame() %>% #st_drop_geometry() %>% 
+  summarise("Rocky Shore" = sum(`Rocky Shore Visits`,na.rm = TRUE),
+                    "Sandy Beach" = sum(`Sandy Beach Visits`,na.rm = TRUE),
+                    "Marshes" = sum(`Marsh Visits`,na.rm = TRUE),
+                    "Armored" = sum(`Armored Visits`,na.rm = TRUE),
+                    "Tidal Flat" = sum(`Tidal Flat Visits`,na.rm = TRUE),
+                    "Total Visits" = sum(DC_YR)) %>% 
+  mutate("Rocky Shore (%)" = round(`Rocky Shore`/`Total Visits`,3)*100,
+         "Sandy Beach (%)" = round(`Sandy Beach`/`Total Visits`,3)*100,
+         "Marshes (%)" = round(`Marshes`/`Total Visits`,3)*100,
+         "Armored (%)" = round(`Armored`/`Total Visits`,3)*100,
+         "Tidal Flat (%)" = round(`Tidal Flat`/`Total Visits`,3)*100)
+
+
+  
+
+
+
+
+
+
