@@ -217,9 +217,10 @@ ESIma %>% as.data.frame() %>% #st_drop_geometry() %>%
 hist(log(ESIma$`Sandy Beach Visits`))
 options(scipen=999) # Reduce the use of scientific notation
 ggplot(ESIma, aes(x = `Sandy Beach Visits`)) + 
-  geom_histogram() + 
+  geom_histogram(color="black") + 
   scale_x_log10() +
-  xlab("Sandy Beach Device Counts")
+  xlab("Sandy Beach Device Counts") + ylab("Count") +
+  theme_minimal()
 
 
 
