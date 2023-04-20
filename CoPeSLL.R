@@ -213,8 +213,13 @@ ESIma %>% as.data.frame() %>% #st_drop_geometry() %>%
          "Armored (%)" = round(`Armored`/`Total Visits`,3)*100,
          "Tidal Flat (%)" = round(`Tidal Flat`/`Total Visits`,3)*100)
 
-
-  
+# Distribution of beach cellphone
+hist(log(ESIma$`Sandy Beach Visits`))
+options(scipen=999) # Reduce the use of scientific notation
+ggplot(ESIma, aes(x = `Sandy Beach Visits`)) + 
+  geom_histogram() + 
+  scale_x_log10() +
+  xlab("Sandy Beach Device Counts")
 
 
 
