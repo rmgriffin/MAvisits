@@ -43,8 +43,6 @@ system.time(hex_grid<-st_filter(hex_grid, ESI))
 
 hex_grid$loc<-ifelse(st_coordinates(st_centroid(hex_grid))[, 1]> 385000, "Nantucket","Martha's Vineyard")  
 
-st_write(hex_grid,"hex_grid.gpkg")
-
 hullN<-st_buffer(st_cast(st_convex_hull(st_union(hex_grid[hex_grid$loc=="Nantucket",])),"MULTILINESTRING"),250) # 250 meter buffered convex hull around Nantucket
 
 hullMV<-st_buffer(st_cast(st_concave_hull(st_union(hex_grid[hex_grid$loc=="Martha's Vineyard",]),ratio = 0.01),"MULTILINESTRING"),250) # 250 meter buffered concave hull around MV, messed with the ratio parameter visually to calibrate to outcome
@@ -57,6 +55,8 @@ hex_grid$affected<-ifelse(st_intersects(hex_grid, hullN, sparse = FALSE), "affec
 hex_grid$affected<-ifelse(st_coordinates(st_centroid(hex_grid))[, 1] < 351700, "unaffected", hex_grid$affected)
 hex_grid$affected<-ifelse(st_coordinates(st_centroid(hex_grid))[, 2] > 4578995 & st_coordinates(st_centroid(hex_grid))[, 1] < 378600, "unaffected", hex_grid$affected)
 
+hex_grid$affected<-ifelse(hex_grid$id %in% c(30489,25366),"affected",hex_grid$affected) # Few manual fixes
+
 ggplot() + # Checking layers
   #geom_sf(data = hex_grid[hex_grid$loc=="Nantucket"&hex_grid$affected=="affected",], fill = "lightblue", color = "black", alpha = 0.5) +  # Hexagonal grid
   geom_sf(data = hex_grid[hex_grid$affected=="affected",], fill = "lightblue", color = "black", alpha = 0.5) +
@@ -64,3 +64,4 @@ ggplot() + # Checking layers
   #geom_sf(data = hullMV, color = "green", alpha = 0.5) +
   theme_minimal()
 
+st_write(hex_grid,"hex_grid.gpkg")
