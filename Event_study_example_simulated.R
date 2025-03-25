@@ -92,8 +92,20 @@ plot_results(model1, "Standard Event Study (Time FE)")
 #plot_results(model2, "Event Study with Linear Decay")
 plot_results(model3, "Distributed Lag Model (DLM)")
 
-## Sum impact start here
 
+# Impact calculation ------------------------------------------------------
+coef_df <- data.frame( # Extract estimated event study coefficients
+  event_time = as.numeric(sub("event_time::", "", names(coef(model1)))),  # Adjust for correct model
+  estimate = coef(model3)
+)
+
+panel <- panel %>% # Merge the estimated effects into the panel dataset
+  left_join(coef_df, by = "event_time") %>%
+  mutate(
+    estimate = ifelse(event_time >= 0, estimate, 0)  # Only apply to post-treatment periods
+  )
+
+# panel$estimate<-ifelse(panel$estimate<0,0,panel$estimate) # If a linear model, will predict negative values. Use DLM to avoid this.
 
 # DID (Callaway and Sant'Anna) --------------------------------------------
 # The did package expects a panel dataset with:
