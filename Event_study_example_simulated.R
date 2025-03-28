@@ -107,6 +107,14 @@ panel <- panel %>% # Merge the estimated effects into the panel dataset
 
 # panel$estimate<-ifelse(panel$estimate<0,0,panel$estimate) # If a linear model, will predict negative values. Use DLM to avoid this.
 
+panel %>% # Cumulative impact by id
+  group_by(id) %>% 
+  summarise(treat = mode(treated), impact = sum(estimate))
+
+panel %>% # Cumulative impact 
+  summarise(impact = sum(estimate, na.rm = TRUE))
+
+
 # DID (Callaway and Sant'Anna) --------------------------------------------
 # The did package expects a panel dataset with:
 #  - id column
