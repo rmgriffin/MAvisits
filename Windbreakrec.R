@@ -164,9 +164,12 @@ batchapi<-function(dft,s,e,fname){ # Function converts sf object to json, passes
   write_parquet(xp, paste0("tData/",fname,".parquet"))
 }
 
-batchapi(df, s = 1656633600000, e = 1659311999999, fname = "July2022") # July 2022
-batchapi(df, s = 1688169600000, e = 1690847999999, fname = "July2023") # July 2023
-batchapi(df, s = 1720003200000, e = 1722681599999, fname = "July2024") # July 2024
+batchapi(df, s = as.numeric(as.POSIXct("2022-07-01 00:00:00.000", tz = "America/New_York")) * 1000,
+         e = as.numeric(as.POSIXct("2022-07-31 23:59:59.999", tz = "America/New_York")) * 1000, fname = "July2022") # July 2022
+batchapi(df, s = as.numeric(as.POSIXct("2023-07-01 00:00:00.000", tz = "America/New_York")) * 1000,
+         e = as.numeric(as.POSIXct("2023-07-31 23:59:59.999", tz = "America/New_York")) * 1000, fname = "July2023") # July 2023
+batchapi(df, s = as.numeric(as.POSIXct("2024-07-01 00:00:00.000", tz = "America/New_York")) * 1000,
+         e = as.numeric(as.POSIXct("2024-07-31 23:59:59.999", tz = "America/New_York")) * 1000, fname = "July2024") # July 2024
 
 dfs<-map_df(list.files("tData/", pattern = "\\.parquet$", full.names = TRUE), read_parquet)
 
