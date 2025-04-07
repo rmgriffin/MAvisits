@@ -172,18 +172,44 @@ hex_union<-hex_grid %>% # Union based on two grouping variables
 # batchapi(df, s = as.numeric(as.POSIXct("2024-07-01 00:00:00.000", tz = "America/New_York")) * 1000,
 #          e = as.numeric(as.POSIXct("2024-07-31 23:59:59.999", tz = "America/New_York")) * 1000, fname = "July2024") # July 2024
 
+### Need to edit above, as it has the right start/end dates/times, but it is binning it in days on UTC time, not days on ET. Seems like I will need to add "startTimeOfDay" and "endTimeOfDay" in HH:mm:ss'Z' format, where Z refers to UTC. In July, UTC and EDT are 4 hours apart, so this would be 20:00:00Z and 19:59:59Z.
+
 dfs<-map_df(list.files("tData/", pattern = "\\.parquet$", full.names = TRUE), read_parquet)
 
 
 # Cell data tasks -------------------------------------------------------
 dfs$FEATUREID<-ifelse(dfs$FEATUREID==1,"Martha's Vineyard","Nantucket")
+
+dfs$EARLIEST_OBSERVATION_OF_DAY<-as.POSIXct(dfs$EARLIEST_OBSERVATION_OF_DAY, format = "%Y-%m-%d %H:%M:%OS", tz = "UTC")
+dfs$LATEST_OBSERVATION_OF_DAY<-as.POSIXct(dfs$LATEST_OBSERVATION_OF_DAY, format = "%Y-%m-%d %H:%M:%OS", tz = "UTC")
+
+
+
 dfs$year<-year(dfs$DAY_IN_FEATURE)
 dfs$instant<-ifelse(dfs$EARLIEST_OBSERVATION_OF_DAY == dfs$LATEST_OBSERVATION_OF_DAY,1,0) # Some observations have duration of stay of zero
 table(dfs$year, dfs$instant, dfs$FEATUREID) # How many observations per year, how many appear to be instantaneous, by island?
 dfs<-dfs %>% filter(instant == 0) # Dropping observations with no stay duration
 
+
+
 dfs$EARLIEST_OBSERVATION_OF_DAY<-as.POSIXct(dfs$EARLIEST_OBSERVATION_OF_DAY, format = "%Y-%m-%d %H:%M:%OS", tz = "America/New_York")
 dfs$LATEST_OBSERVATION_OF_DAY<-as.POSIXct(dfs$LATEST_OBSERVATION_OF_DAY, format = "%Y-%m-%d %H:%M:%OS", tz = "America/New_York")
 
 dfs$duration_min<-as.numeric(difftime(dfs$LATEST_OBSERVATION_OF_DAY,dfs$EARLIEST_OBSERVATION_OF_DAY,units = "secs"))/60
-dfs1<-dfs %>% filter(duration_min>5) # 25% of observations are less than 5 minutes observed in the area, dropping those
+dfs<-dfs %>% filter(duration_min>5) # 25% of observations are less than 5 minutes observed in the area, dropping those
+dfs$vd<-1
+
+
+# Visitation model --------------------------------------------------------
+df<-dfs %>% 
+  group_by(DAY_IN_FEATURE,FEATUREID) %>% 
+  summarise(visits = sum(vd)) %>% 
+  mutate(year = as.factor(year(DAY_IN_FEATURE)), dayofmonth = day(DAY_IN_FEATURE)) 
+
+ggplot(df, aes(x = dayofmonth, y = visits, color = year)) +
+  geom_line() +
+  labs(x = "Day", y = "Visits", color = "Year") +
+  theme_minimal()
+
+df$weekend<-ifelse(df$year==2022 & df$dayofmonth %in% c(2,3,9,10,16,17,23,24,30,31),1,0)
+
