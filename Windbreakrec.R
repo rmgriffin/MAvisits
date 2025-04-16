@@ -208,3 +208,13 @@ df$weekendholiday<-ifelse(df$year==2022 & df$dayofmonth %in% c(2,3,4,9,10,16,17,
                           ifelse(df$year==2023 & df$dayofmonth %in% c(1,2,4,8,9,15,16,22,23,29,30),1,
                                  ifelse(df$year==2024 & df$dayofmonth %in% c(4,6,7,13,14,20,21,27,28),1,0)))
 
+wth<-read.csv("Data/NantucketAirportWeatherJuly2022-2024.csv")
+wth$datetime<-as.POSIXct(paste0(wth$Date..time,wth$Year), format = "%b %d, %I:%M %p %Y", tz = "America/New_York")
+wth<-wth %>% filter(format(datetime, "%H:%M:%S") >= "05:00:00", format(datetime, "%H:%M:%S") <= "20:00:00") # Only retaining weather observations that match our daily visitation window
+wth$date<-as.Date(wth$datetime)
+wth$Viskm<-as.numeric(ifelse(wth$Viskm == "< 0.4",0, ifelse(wth$Viskm == "",NA,wth$Viskm))) # Visibility in km, making numeric and replacing values
+
+wth2<-wth %>% group_by(date) %>% 
+  summarise(maxTC = max(TempC), minTC = min(TempC), raintot = sum(X1hrprecmm,na.rm = TRUE), meanviskm = mean(Viskm,na.rm = TRUE))
+
+
