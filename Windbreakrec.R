@@ -213,8 +213,24 @@ wth$datetime<-as.POSIXct(paste0(wth$Date..time,wth$Year), format = "%b %d, %I:%M
 wth<-wth %>% filter(format(datetime, "%H:%M:%S") >= "05:00:00", format(datetime, "%H:%M:%S") <= "20:00:00") # Only retaining weather observations that match our daily visitation window
 wth$date<-as.Date(wth$datetime)
 wth$Viskm<-as.numeric(ifelse(wth$Viskm == "< 0.4",0, ifelse(wth$Viskm == "",NA,wth$Viskm))) # Visibility in km, making numeric and replacing values
+wth$time<-format(wth$datetime, "%H:%M:%S")
+wth$X1hrprecmm<-ifelse(wth$time>"12:00:00",NA,wth$X1hrprecmm) # Only care about rain in the morning (5am - 12pm) for visitation purposes (Coombes et al. 2011)
 
-wth2<-wth %>% group_by(date) %>% 
-  summarise(maxTC = max(TempC), minTC = min(TempC), raintot = sum(X1hrprecmm,na.rm = TRUE), meanviskm = mean(Viskm,na.rm = TRUE))
+wth<-wth %>% group_by(date) %>% # Summarizing by date
+  summarise(maxTC = max(TempC,na.rm = TRUE), minTC = min(TempC,na.rm = TRUE), raintot = sum(X1hrprecmm,na.rm = TRUE), meanviskm = mean(Viskm,na.rm = TRUE))
 
+wth$rain<-ifelse(wth$raintot>0,1,0) # Rain indicator variable instead of amount, which has addition problems
+wth$raintot<-NULL
 
+df<-df %>% mutate(date = as.Date(DAY_IN_FEATURE)) %>% ungroup() %>% select(!DAY_IN_FEATURE) %>%  # Ungroup is needed because DAY_IN_FEATURE was previously a grouping variable
+  left_join(wth, by = "date")
+rm(wth)
+
+nt<-df %>% filter(FEATUREID == "Nantucket")
+
+nt<-nt %>% mutate(
+    post = (date >= "2024-07-16"),
+    treated_day = as.integer(post))
+
+summary(model<-lm(visits ~ maxTC + rain + weekendholiday + meanviskm , data = nt %>% filter(year == 2023)))
+model<-feols(visits ~ treated_day | year + dayofmonth, data = nt)
