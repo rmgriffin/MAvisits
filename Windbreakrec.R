@@ -4,7 +4,7 @@ rm(list=ls()) # Clears workspace
 # install.packages("renv") # Install/call libraries
 # renv::init()
 
-PKG <- c("googledrive","sf","tidyverse","httpuv","R.utils","httr","jsonlite","geojsonsf","lwgeom","furrr","arrow","stringr")
+PKG<-c("googledrive","sf","tidyverse","httpuv","R.utils","httr","jsonlite","geojsonsf","lwgeom","furrr","arrow","stringr","sandwich","lmtest","fixest")
 
 for (p in PKG) {
   if(!require(p,character.only = TRUE)) {  
@@ -216,11 +216,11 @@ ggplot(df, aes(x = dayofmonth, y = visits, color = year)) +
   labs(x = "Day", y = "Visits", color = "Year") +
   theme_minimal()
 
-df$weekendholiday<-ifelse(df$year==2022 & df$dayofmonth %in% c(2,3,4,9,10,16,17,23,24,30,31),1,
-                          ifelse(df$year==2023 & df$dayofmonth %in% c(1,2,4,8,9,15,16,22,23,29,30),1,
-                                 ifelse(df$year==2024 & df$dayofmonth %in% c(4,6,7,13,14,20,21,27,28),1,0)))
+# df$weekendholiday<-ifelse(df$year==2022 & df$dayofmonth %in% c(2,3,4,9,10,16,17,23,24,30,31),1,
+#                           ifelse(df$year==2023 & df$dayofmonth %in% c(1,2,4,8,9,15,16,22,23,29,30),1,
+#                                  ifelse(df$year==2024 & df$dayofmonth %in% c(4,6,7,13,14,20,21,27,28),1,0)))
 
-# wth<-read.csv("Data/NantucketAirportWeatherJuly2022-2024.csv")
+# wth<-read.csv("Data/NantucketAirportWeatherJuly2022-2024.csv") # Weather data NWS
 # wth$datetime<-as.POSIXct(paste0(wth$Date..time,wth$Year), format = "%b %d, %I:%M %p %Y", tz = "America/New_York")
 # wth<-wth %>% filter(format(datetime, "%H:%M:%S") >= "05:00:00", format(datetime, "%H:%M:%S") <= "20:00:00") # Only retaining weather observations that match our daily visitation window
 # wth$date<-as.Date(wth$datetime)
@@ -234,10 +234,10 @@ df$weekendholiday<-ifelse(df$year==2022 & df$dayofmonth %in% c(2,3,4,9,10,16,17,
 # wth$rain<-ifelse(wth$raintot>0,1,0) # Rain indicator variable instead of amount, which has addition problems
 # wth$raintot<-NULL
 
-wth<-read.csv("Data/NANTUCKET MEMORIAL AIRPORT, MA US (USW00014756).csv")
+wth<-read.csv("Data/NANTUCKET MEMORIAL AIRPORT, MA US (USW00014756).csv") # Weather data NOAA NCEI
 wth$Date<-as.Date(wth$Date,format = "%m/%d/%Y")
-wth<-wth %>% filter(lubridate::month(Date) == 7, lubridate::year(Date) %in% c(2022, 2023, 2024)) %>% rename(precIn = PRCP..Inches.,date = Date) %>% 
-  select(date,precIn)
+wth<-wth %>% filter(lubridate::month(Date) == 7, lubridate::year(Date) %in% c(2022, 2023, 2024)) %>% rename(tempmaxF = TMAX..Degrees.Fahrenheit., precIn = PRCP..Inches.,date = Date) %>% 
+  select(date,precIn,tempmaxF)
 
 df<-df %>% mutate(date = as.Date(DAY_IN_FEATURE)) %>% ungroup() %>% select(!DAY_IN_FEATURE) %>%  # Ungroup is needed because DAY_IN_FEATURE was previously a grouping variable
   left_join(wth, by = "date")
@@ -247,9 +247,39 @@ nt<-df %>% filter(FEATUREID == "Nantucket")
 
 nt<-nt %>% mutate(
     post = (date >= "2024-07-16"),
-    treated_day = as.integer(post))
+    treated_day = as.integer(post), # Indicator for treated/untreated
+    day_of_week = weekdays(as.Date(date))) %>% # Day of week
+  dplyr::select(-post)
 
-summary(model<-lm(visits ~ precIn, data = nt %>% filter(year == 2023)))
-coeftest(model,vcov = vcovHC,type = "HC1") # Robust standard errors
+nt<-nt %>% 
+  mutate(temp_bin = cut(tempmaxF, breaks = c(65, 70, 75, 80, 85, 100)))
 
-model<-feols(visits ~ treated_day | year + dayofmonth, data = nt)
+nt<-nt %>% 
+  mutate(
+    treat_day0 = as.integer(date == "2024-07-16"), # Short treatment window indicators
+    treat_day1 = as.integer(date == "2024-07-17"),
+    treat_day2 = as.integer(date == "2024-07-18"),
+    treat_day3 = as.integer(date == "2024-07-19"),
+    treat_day4 = as.integer(date == "2024-07-20"),
+    treat_day5 = as.integer(date == "2024-07-21"),
+    treat_day6 = as.integer(date == "2024-07-22")
+  )
+
+nt<-nt %>% 
+  mutate(
+    pollution_mday = "07-16",  # month-day of real event
+    pollution_date = as.Date(paste0(year, "-", pollution_mday)),
+    event_day = as.integer(date - pollution_date)
+  ) %>% 
+  dplyr::select(-c(pollution_date,pollution_mday))
+
+# summary(model<-lm(visits ~ precIn + temp_bin, data = nt %>% filter(year == 2023)))
+# coeftest(model,vcov = vcovHC,type = "HC1") # Robust standard errors
+
+model<-feols(visits ~ treated_day + precIn | year + dayofmonth + day_of_week, vcov = "hetero", data = nt %>% filter(year %in% c("2023","2024"))) # cluster = ~ group
+
+model<-feols(visits ~ treat_day0 + treat_day1 + treat_day2 + treat_day3 + treat_day4 + treat_day5 + treat_day6 + precIn | year + dayofmonth + day_of_week, vcov = "hetero", data = nt %>% filter(year %in% c("2023","2024"))) # cluster = ~ group
+
+model<-feols(visits ~ i(event_day, ref = -1) + precIn | year + day_of_week, vcov = "hetero", data = nt %>% filter(year %in% c("2023","2024"))) # cluster = ~ group
+
+summary(model)
