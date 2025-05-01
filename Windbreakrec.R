@@ -8,7 +8,7 @@ PKG<-c("googledrive","sf","tidyverse","httpuv","R.utils","httr","jsonlite","geoj
 
 for (p in PKG) {
   if(!require(p,character.only = TRUE)) {  
-    install.packages(p)
+    install.packages(p, type = "binary")
     require(p,character.only = TRUE)}
 }
 
@@ -31,18 +31,18 @@ file.remove("Data.zip")
 setwd("..")
 rm(files, folder, folder_url, dl)
 
-# Analysis -----------------------------------------------------------
-ESI<-st_read("Data/MV_N_ESIL.gpkg")
+ESI<-st_read("Data/MV_N_ESIL.gpkg") # Layer that defines the coastline in line GIS vector format
 ESI<-st_transform(ESI,crs = 32619) # Project to UTM 19N (in meters)
 
-bbox<-st_bbox(ESI)
-hex_grid<-st_make_grid(ESI, cellsize = 50, square = FALSE,crs = st_crs(ESI)) %>%
+# Creating study area of interest ------------------------------------------
+bbox<-st_bbox(ESI) # Bounding box of ESI layer
+hex_grid<-st_make_grid(ESI, cellsize = 50, square = FALSE,crs = st_crs(ESI)) %>% # Making a regularized hexagonal tessellation over the area 
   st_as_sf() %>%
   mutate(id = row_number())
   
-system.time(hex_grid<-st_filter(hex_grid, ESI))
+system.time(hex_grid<-st_filter(hex_grid, ESI)) # Grid hexagons that overlay ESI lines
 
-hex_grid$loc<-ifelse(st_coordinates(st_centroid(hex_grid))[, 1]> 385000, "Nantucket","Martha's Vineyard")  
+hex_grid$loc<-ifelse(st_coordinates(st_centroid(hex_grid))[, 1]> 385000, "Nantucket","Martha's Vineyard") # Naming areas 
 
 hullN<-st_buffer(st_cast(st_convex_hull(st_union(hex_grid[hex_grid$loc=="Nantucket",])),"MULTILINESTRING"),50) # 100 meter buffered convex hull around Nantucket
 
@@ -51,7 +51,6 @@ hullMV<-st_buffer(st_cast(st_concave_hull(st_union(hex_grid[hex_grid$loc=="Marth
 hex_grid$affected<-ifelse(st_intersects(hex_grid, hullN, sparse = FALSE), "affected", # Convex hull Nantucket
                           ifelse(st_coordinates(st_centroid(hex_grid))[, 2] < 4567000, "affected", # Southern indent convex hull Nantucket
                                  ifelse(st_intersects(hex_grid, hullMV, sparse = FALSE), "affected", "unaffected"))) # Concave hull MV 
-                                        
 
 hex_grid$affected<-ifelse(st_coordinates(st_centroid(hex_grid))[, 1] < 351700, "unaffected", hex_grid$affected)
 hex_grid$affected<-ifelse(st_coordinates(st_centroid(hex_grid))[, 2] > 4578995 & st_coordinates(st_centroid(hex_grid))[, 1] < 378600, "unaffected", hex_grid$affected)
@@ -59,8 +58,8 @@ hex_grid$affected<-ifelse(hex_grid$loc=="Nantucket" & st_coordinates(st_centroid
 hex_grid$affected<-ifelse(hex_grid$loc=="Nantucket" & st_coordinates(st_centroid(hex_grid))[, 2] > 4572950 & st_coordinates(st_centroid(hex_grid))[, 1] > 416500, "affected", hex_grid$affected)
 hex_grid$affected<-ifelse(st_coordinates(st_centroid(hex_grid))[, 1] < 396500 & hex_grid$loc=="Nantucket", "unaffected", hex_grid$affected) # Removing Tuckernuck and Muskeget Islands from analysis
 
-#hex_grid$affected<-ifelse(hex_grid$id %in% c(30489,25366),"affected",hex_grid$affected) # Few manual fixes @ 250m resolution hexes
-hex_grid$affected<-ifelse(hex_grid$id %in% c(707010,706046,705082,704118,699619,698655,695763,694799,693835,692871,692228,691907,691264,690300,689336,688372,
+#hex_grid$affected<-ifelse(hex_grid$id %in% c(30489,25366),"affected",hex_grid$affected) # Few manual fixes @ 250m hexes
+hex_grid$affected<-ifelse(hex_grid$id %in% c(707010,706046,705082,704118,699619,698655,695763,694799,693835,692871,692228,691907,691264,690300,689336,688372, # Manual fixes using 50m hexes
                                              687408,686444,685480,684837,684516,683873,683552,682909,682588,681945,681624,680981,680660,680017,679053,678089,
                                              677446,677125,676482,676161,675518,674554,673590,672626,671662,670698,670055,669091,668127,667163,666199,662343,
                                              661379,661058,660415,660737,660094,659773,659130,658809,658487,658166,657523,657202,656559,655595,655274,654631,
@@ -85,11 +84,9 @@ hex_union<-hex_grid %>% # Union based on two grouping variables
 
 # st_write(hex_union,"hex_union.gpkg")
 
-
 # Downloading cell data ---------------------------------------------------
 
 ## Going to want higher res cell data home locations
-
 api_key<-read.csv(file = "APIkey.csv", header = FALSE)
 api_key<-api_key$V1
 headers<-add_headers(Authorization = api_key, `Content-Type` = "application/json") # Set up the headers including the API key
@@ -97,15 +94,15 @@ url<-"https://api.gravyanalytics.com/v1.1/areas/tradeareas" # API URL to query
 if (!dir.exists("tData")) { # Create cell data directory if it doesn't exist
   dir.create("tData", recursive = TRUE)
 }
-df<-hex_union %>% filter(affected == "affected")
-df$id<-seq(1,nrow(df),1)
+df<-hex_union %>% filter(affected == "affected") # Only interested in affected areas
+df$id<-seq(1,nrow(df),1) # API requires a variable named "id" to pass through the id to the files that are returned, named "searchobjectid" in the file
 df<-st_transform(df, crs = 4326) # Needs to be projected in 4326 to work with lat long conventions of the API
 
 batchapi<-function(dft,s,e,fname){ # Function converts sf object to json, passes to api, gets returned data, and merges back with sf object
 
   dft$startDateTimeEpochMS<-s # 1704067200000 These work as query variables
   dft$endDateTimeEpochMS<-e # 1706831999000
-  dft$excludeFlags<-25216 # Corresponds to guidance for visitation from ventel
+  dft$excludeFlags<-25216 # Corresponds to guidance for visitation from venntel
   # dft$startDateTimeEpochMS<-1656633600000
   # dft$endDateTimeEpochMS<-1659311999999
   #dft<-dft %>% select(-PUD_YR_AVG) # Need more than the geometry column to create a feature collection using sf_geojson. Also, there is a limit of 20 features per request (even if it doesn't return results for 20 features).
@@ -176,7 +173,7 @@ batchapi<-function(dft,s,e,fname){ # Function converts sf object to json, passes
   #xp<-merge(xp,dft, by.x = "FEATUREID", by.y = "id") # %>% dplyr::select(FEATUREID,DEVICEID,DAY_IN_FEATURE,EARLIEST_OBSERVATION_OF_DAY,LATEST_OBSERVATION_OF_DAY,LATITUDE,LONGITUDE,CENSUS_BLOCK_GROUP_ID,startDateTimeEpochMS,endDateTimeEpochMS,DEVICES_WITH_DECISION_IN_CBG_COUNT,TOTAL_POPULATION)
   xp<-xp %>% dplyr::select(FEATUREID,DEVICEID,DAY_IN_FEATURE,EARLIEST_OBSERVATION_OF_DAY,LATEST_OBSERVATION_OF_DAY,CENSUS_BLOCK_GROUP_ID,DEVICES_WITH_DECISION_IN_CBG_COUNT,TOTAL_POPULATION)
 
-  write_parquet(xp, paste0("tData/",fname,".parquet"))
+  write_parquet(xp, paste0("tData/",fname,".parquet")) # Write to parquet file to save space, versus csv
 }
 
 batchapi(df, s = as.numeric(as.POSIXct("2022-07-01 00:00:00.000", tz = "America/New_York")) * 1000,
