@@ -250,7 +250,9 @@ nt<-nt %>% mutate(
   dplyr::select(-post)
 
 nt<-nt %>% 
-  mutate(temp_bin = cut(tempmaxF, breaks = c(65, 70, 75, 80, 85, 100)))
+  mutate(temp_bin = cut(tempmaxF, breaks = c(60, 70, 80, 90, 100)))
+
+nt$hot<-ifelse(nt$tempmaxF>80,1,0)
 
 nt<-nt %>% 
   mutate(
@@ -260,7 +262,15 @@ nt<-nt %>%
     treat_day3 = as.integer(date == "2024-07-19"),
     treat_day4 = as.integer(date == "2024-07-20"),
     treat_day5 = as.integer(date == "2024-07-21"),
-    treat_day6 = as.integer(date == "2024-07-22")
+    treat_day6 = as.integer(date == "2024-07-22"),
+    treat_day7 = as.integer(date == "2024-07-23"),
+    treat_day8 = as.integer(date == "2024-07-24"),
+    treat_day9 = as.integer(date == "2024-07-25"),
+    treat_day10 = as.integer(date == "2024-07-26"),
+    treat_day11 = as.integer(date == "2024-07-27"),
+    treat_day12 = as.integer(date == "2024-07-28"),
+    treat_day13 = as.integer(date == "2024-07-29"),
+    treat_day14 = as.integer(date == "2024-07-30")
   )
 
 nt<-nt %>% 
@@ -274,10 +284,29 @@ nt<-nt %>%
 # summary(model<-lm(visits ~ precIn + temp_bin, data = nt %>% filter(year == 2023)))
 # coeftest(model,vcov = vcovHC,type = "HC1") # Robust standard errors
 
-model<-feols(visits ~ treated_day + precIn | year + dayofmonth + day_of_week, vcov = "hetero", data = nt %>% filter(year %in% c("2023","2024"))) # cluster = ~ group
+# model<-feols(visits ~ treated_day + precIn + hot | year + dayofmonth + day_of_week, vcov = "hetero", data = nt %>% filter(year %in% c("2023","2024"))) # cluster = ~ group
+# 
+# model<-feols(visits ~ i(event_day, ref = -1) + precIn | year + day_of_week, vcov = "hetero", data = nt %>% filter(year %in% c("2023","2024"))) # cluster = ~ group
 
-model<-feols(visits ~ treat_day0 + treat_day1 + treat_day2 + treat_day3 + treat_day4 + treat_day5 + treat_day6 + precIn | year + dayofmonth + day_of_week, vcov = "hetero", data = nt %>% filter(year %in% c("2023","2024"))) # cluster = ~ group
-
-model<-feols(visits ~ i(event_day, ref = -1) + precIn | year + day_of_week, vcov = "hetero", data = nt %>% filter(year %in% c("2023","2024"))) # cluster = ~ group
+model<-feols(visits ~ treat_day0 + treat_day1 + treat_day2 + treat_day3 + treat_day4 + treat_day5 + treat_day6 + treat_day7 + treat_day8 + treat_day9 + treat_day10 + treat_day11 + treat_day12 + treat_day13 + treat_day14 + precIn | year + dayofmonth + day_of_week, vcov = "hetero", data = nt %>% filter(year %in% c("2023","2024"))) # cluster = ~ group
 
 summary(model)
+
+coefs<-broom::tidy(model) %>%
+  filter(str_detect(term, "^treat_day\\d+$")) %>%  # Only keep treat_day* terms
+  mutate(
+    day = as.integer(str_remove(term, "treat_day")),
+    conf.low = estimate - 1.96 * std.error,
+    conf.high = estimate + 1.96 * std.error
+  )
+
+ggplot(coefs, aes(x = day, y = estimate)) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.4) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+  labs(
+    title = "Estimated Daily Effect of Pollution Event on Visitation",
+    x = "Days After Pollution Event",
+    y = "Estimated Effect on Visits (vs. Untreated Days)"
+  ) +
+  theme_minimal()
