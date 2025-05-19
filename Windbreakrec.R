@@ -206,12 +206,13 @@ dfs$vd<-1 # Indicator variable for a visit
 df<-dfs %>% 
   group_by(DAY_IN_FEATURE,FEATUREID) %>% 
   summarise(visits = sum(vd)) %>% 
-  mutate(year = as.factor(year(DAY_IN_FEATURE)), dayofmonth = day(DAY_IN_FEATURE)) 
+  mutate(year = as.factor(year(DAY_IN_FEATURE)), dayofmonth = format(as.Date(DAY_IN_FEATURE),"%m-%d")) 
 
-ggplot(df, aes(x = dayofmonth, y = visits, color = year)) +
+ggplot(df %>% filter(FEATUREID == "Nantucket"), aes(x = dayofmonth, y = visits, color = year, group = year)) +
   geom_line() +
   labs(x = "Day", y = "Visits", color = "Year") +
-  theme_minimal()
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
 
 # df$weekendholiday<-ifelse(df$year==2022 & df$dayofmonth %in% c(2,3,4,9,10,16,17,23,24,30,31),1,
 #                           ifelse(df$year==2023 & df$dayofmonth %in% c(1,2,4,8,9,15,16,22,23,29,30),1,
