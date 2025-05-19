@@ -234,7 +234,7 @@ ggplot(df %>% filter(FEATUREID == "Nantucket"), aes(x = dayofmonth, y = visits, 
 
 wth<-read.csv("Data/NANTUCKET MEMORIAL AIRPORT, MA US (USW00014756).csv") # Weather data NOAA NCEI
 wth$Date<-as.Date(wth$Date,format = "%m/%d/%Y")
-wth<-wth %>% filter(lubridate::month(Date) == 7, lubridate::year(Date) %in% c(2022, 2023, 2024)) %>% rename(tempmaxF = TMAX..Degrees.Fahrenheit., precIn = PRCP..Inches.,date = Date) %>% 
+wth<-wth %>% filter(lubridate::month(Date) %in% c(6,7,8), lubridate::year(Date) %in% c(2022, 2023, 2024)) %>% rename(tempmaxF = TMAX..Degrees.Fahrenheit., precIn = PRCP..Inches.,date = Date) %>% 
   select(date,precIn,tempmaxF)
 
 df<-df %>% mutate(date = as.Date(DAY_IN_FEATURE)) %>% ungroup() %>% select(!DAY_IN_FEATURE) %>%  # Ungroup is needed because DAY_IN_FEATURE was previously a grouping variable
