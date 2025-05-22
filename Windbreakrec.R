@@ -82,7 +82,7 @@ hex_union<-hex_grid %>% # Union based on two grouping variables
   group_by(loc, affected) %>%
   summarise(geometry = st_union(x), .groups = "drop")
 
-# st_write(hex_union,"hex_union.gpkg")
+# st_write(st_transform(hex_union, crs = 4326),"hex_union.gpkg")
 
 # Downloading cell data ---------------------------------------------------
 
@@ -199,17 +199,18 @@ dfs<-dfs %>% filter(instant == 0) # Dropping observations with no stay duration
 
 dfs$duration_min<-as.numeric(difftime(dfs$LATEST_OBSERVATION_OF_DAY,dfs$EARLIEST_OBSERVATION_OF_DAY,units = "secs"))/60
 dfs<-dfs %>% filter(duration_min>5) # 25% of observations are less than 5 minutes observed in the area, dropping those
-dfs$vd<-1 # Indicator variable for a visit
+dfs$vd<-as.numeric(dfs$TOTAL_POPULATION)/as.numeric(dfs$DEVICES_WITH_DECISION_IN_CBG_COUNT) # Population normalized visits
+#dfs$vd<-1 # Each device as a visit
 
 dfs %>% # Multiple decision locations for devices?
-  group_by(DEVICEID,year) %>%
+  group_by(DEVICEID) %>% # group_by(DEVICEID,year)
   summarize(has_variation = n_distinct(CENSUS_BLOCK_GROUP_ID), .groups = "drop") %>% 
   count(has_variation)
 
 # Visitation model --------------------------------------------------------
 df<-dfs %>% 
   group_by(DAY_IN_FEATURE,FEATUREID) %>% 
-  summarise(visits = sum(vd)) %>% 
+  summarise(visits = sum(vd,na.rm = TRUE)) %>% 
   mutate(year = as.factor(year(DAY_IN_FEATURE)), dayofmonth = format(as.Date(DAY_IN_FEATURE),"%m-%d")) 
 
 ggplot(df %>% filter(FEATUREID == "Nantucket"), aes(x = dayofmonth, y = visits, color = year, group = year)) +
