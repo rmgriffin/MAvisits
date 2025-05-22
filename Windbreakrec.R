@@ -201,6 +201,10 @@ dfs$duration_min<-as.numeric(difftime(dfs$LATEST_OBSERVATION_OF_DAY,dfs$EARLIEST
 dfs<-dfs %>% filter(duration_min>5) # 25% of observations are less than 5 minutes observed in the area, dropping those
 dfs$vd<-1 # Indicator variable for a visit
 
+dfs %>% # Multiple decision locations for devices?
+  group_by(DEVICEID,year) %>%
+  summarize(has_variation = n_distinct(CENSUS_BLOCK_GROUP_ID), .groups = "drop") %>% 
+  count(has_variation)
 
 # Visitation model --------------------------------------------------------
 df<-dfs %>% 
