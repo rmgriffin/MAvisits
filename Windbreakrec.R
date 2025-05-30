@@ -16,7 +16,7 @@ renv::snapshot()
 rm(p,PKG)
 options(scipen = 999) # Prevent scientific notation
 
-# Load data -----------------------------------------------------------
+# Download data -----------------------------------------------------------
 dir.create(file.path('Data'), recursive = TRUE)
 folder_url<-"https://drive.google.com/open?id=15amwG3br43cpU9MS8gghNcYhljHoi52I"
 folder<-drive_get(as_id(folder_url))
@@ -31,61 +31,63 @@ file.remove("Data.zip")
 setwd("..")
 rm(files, folder, folder_url, dl)
 
-ESI<-st_read("Data/MV_N_ESIL.gpkg") # Layer that defines the coastline in line GIS vector format
-ESI<-st_transform(ESI,crs = 32619) # Project to UTM 19N (in meters)
-
 # Creating study area of interest ------------------------------------------
-bbox<-st_bbox(ESI) # Bounding box of ESI layer
-hex_grid<-st_make_grid(ESI, cellsize = 50, square = FALSE,crs = st_crs(ESI)) %>% # Making a regularized hexagonal tessellation over the area 
-  st_as_sf() %>%
-  mutate(id = row_number())
-  
-system.time(hex_grid<-st_filter(hex_grid, ESI)) # Grid hexagons that overlay ESI lines
+# ESI<-st_read("Data/MV_N_ESIL.gpkg") # Layer that defines the coastline in line GIS vector format
+# ESI<-st_transform(ESI,crs = 32619) # Project to UTM 19N (in meters)
+# 
+# bbox<-st_bbox(ESI) # Bounding box of ESI layer
+# hex_grid<-st_make_grid(ESI, cellsize = 50, square = FALSE,crs = st_crs(ESI)) %>% # Making a regularized hexagonal tessellation over the area 
+#   st_as_sf() %>%
+#   mutate(id = row_number())
+#   
+# system.time(hex_grid<-st_filter(hex_grid, ESI)) # Grid hexagons that overlay ESI lines
+# 
+# hex_grid$loc<-ifelse(st_coordinates(st_centroid(hex_grid))[, 1]> 385000, "Nantucket","Martha's Vineyard") # Naming areas 
+# 
+# hullN<-st_buffer(st_cast(st_convex_hull(st_union(hex_grid[hex_grid$loc=="Nantucket",])),"MULTILINESTRING"),50) # 100 meter buffered convex hull around Nantucket
+# 
+# hullMV<-st_buffer(st_cast(st_concave_hull(st_union(hex_grid[hex_grid$loc=="Martha's Vineyard",]),ratio = 0.01),"MULTILINESTRING"),100) # 100 meter buffered concave hull around MV, messed with the ratio parameter visually to calibrate to outcome
+# 
+# hex_grid$affected<-ifelse(st_intersects(hex_grid, hullN, sparse = FALSE), "affected", # Convex hull Nantucket
+#                           ifelse(st_coordinates(st_centroid(hex_grid))[, 2] < 4567000, "affected", # Southern indent convex hull Nantucket
+#                                  ifelse(st_intersects(hex_grid, hullMV, sparse = FALSE), "affected", "unaffected"))) # Concave hull MV 
+# 
+# hex_grid$affected<-ifelse(st_coordinates(st_centroid(hex_grid))[, 1] < 351700, "unaffected", hex_grid$affected)
+# hex_grid$affected<-ifelse(st_coordinates(st_centroid(hex_grid))[, 2] > 4578995 & st_coordinates(st_centroid(hex_grid))[, 1] < 378600, "unaffected", hex_grid$affected)
+# hex_grid$affected<-ifelse(hex_grid$loc=="Nantucket" & st_coordinates(st_centroid(hex_grid))[, 2] < 4567600, "affected", hex_grid$affected)
+# hex_grid$affected<-ifelse(hex_grid$loc=="Nantucket" & st_coordinates(st_centroid(hex_grid))[, 2] > 4572950 & st_coordinates(st_centroid(hex_grid))[, 1] > 416500, "affected", hex_grid$affected)
+# hex_grid$affected<-ifelse(st_coordinates(st_centroid(hex_grid))[, 1] < 396500 & hex_grid$loc=="Nantucket", "unaffected", hex_grid$affected) # Removing Tuckernuck and Muskeget Islands from analysis
+# 
+# #hex_grid$affected<-ifelse(hex_grid$id %in% c(30489,25366),"affected",hex_grid$affected) # Few manual fixes @ 250m hexes
+# hex_grid$affected<-ifelse(hex_grid$id %in% c(707010,706046,705082,704118,699619,698655,695763,694799,693835,692871,692228,691907,691264,690300,689336,688372, # Manual fixes using 50m hexes
+#                                              687408,686444,685480,684837,684516,683873,683552,682909,682588,681945,681624,680981,680660,680017,679053,678089,
+#                                              677446,677125,676482,676161,675518,674554,673590,672626,671662,670698,670055,669091,668127,667163,666199,662343,
+#                                              661379,661058,660415,660737,660094,659773,659130,658809,658487,658166,657523,657202,656559,655595,655274,654631,
+#                                              654310,653346,652382,651418,651097,650454,650133,649490,649812,649169,649491,905465,905144,904823,904502,904181,
+#                                              903860,903539,903218,902897,902576,902255,901934,900972,900651,900330,900009,899688,899367,899046,898725,898404,
+#                                              896479,896158,895837,895516,895195,894874,894553,891986,891665,891344,864054,863733,937235,936914),"affected",hex_grid$affected) # Few manual fixes @ 50m resolution hexes
+# 
+# ## Add a handful of ids on MV that are unaffected to above line, if pursuing analysis there
+# 
+# ggplot() + # Checking layers
+#   #geom_sf(data = hex_grid[hex_grid$loc=="Nantucket"&hex_grid$affected=="affected",], fill = "lightblue", color = "black", alpha = 0.5) +  # Hexagonal grid
+#   geom_sf(data = hex_grid[hex_grid$affected=="affected",], fill = "lightblue", color = "black", alpha = 0.5) +
+#   #geom_sf(data = ESI, color = "red", size = 1.5) +  # Line feature
+#   #geom_sf(data = hullMV, color = "green", alpha = 0.5) +
+#   theme_minimal()
+# 
+# # st_write(hex_grid,"hex_grid50.gpkg")
+# 
+# hex_union<-hex_grid %>% # Union based on two grouping variables
+#   group_by(loc, affected) %>%
+#   summarise(geometry = st_union(x), .groups = "drop")
+# 
+# # st_write(st_transform(hex_union, crs = 4326),"hex_union.gpkg")
 
-hex_grid$loc<-ifelse(st_coordinates(st_centroid(hex_grid))[, 1]> 385000, "Nantucket","Martha's Vineyard") # Naming areas 
 
-hullN<-st_buffer(st_cast(st_convex_hull(st_union(hex_grid[hex_grid$loc=="Nantucket",])),"MULTILINESTRING"),50) # 100 meter buffered convex hull around Nantucket
-
-hullMV<-st_buffer(st_cast(st_concave_hull(st_union(hex_grid[hex_grid$loc=="Martha's Vineyard",]),ratio = 0.01),"MULTILINESTRING"),100) # 100 meter buffered concave hull around MV, messed with the ratio parameter visually to calibrate to outcome
-
-hex_grid$affected<-ifelse(st_intersects(hex_grid, hullN, sparse = FALSE), "affected", # Convex hull Nantucket
-                          ifelse(st_coordinates(st_centroid(hex_grid))[, 2] < 4567000, "affected", # Southern indent convex hull Nantucket
-                                 ifelse(st_intersects(hex_grid, hullMV, sparse = FALSE), "affected", "unaffected"))) # Concave hull MV 
-
-hex_grid$affected<-ifelse(st_coordinates(st_centroid(hex_grid))[, 1] < 351700, "unaffected", hex_grid$affected)
-hex_grid$affected<-ifelse(st_coordinates(st_centroid(hex_grid))[, 2] > 4578995 & st_coordinates(st_centroid(hex_grid))[, 1] < 378600, "unaffected", hex_grid$affected)
-hex_grid$affected<-ifelse(hex_grid$loc=="Nantucket" & st_coordinates(st_centroid(hex_grid))[, 2] < 4567600, "affected", hex_grid$affected)
-hex_grid$affected<-ifelse(hex_grid$loc=="Nantucket" & st_coordinates(st_centroid(hex_grid))[, 2] > 4572950 & st_coordinates(st_centroid(hex_grid))[, 1] > 416500, "affected", hex_grid$affected)
-hex_grid$affected<-ifelse(st_coordinates(st_centroid(hex_grid))[, 1] < 396500 & hex_grid$loc=="Nantucket", "unaffected", hex_grid$affected) # Removing Tuckernuck and Muskeget Islands from analysis
-
-#hex_grid$affected<-ifelse(hex_grid$id %in% c(30489,25366),"affected",hex_grid$affected) # Few manual fixes @ 250m hexes
-hex_grid$affected<-ifelse(hex_grid$id %in% c(707010,706046,705082,704118,699619,698655,695763,694799,693835,692871,692228,691907,691264,690300,689336,688372, # Manual fixes using 50m hexes
-                                             687408,686444,685480,684837,684516,683873,683552,682909,682588,681945,681624,680981,680660,680017,679053,678089,
-                                             677446,677125,676482,676161,675518,674554,673590,672626,671662,670698,670055,669091,668127,667163,666199,662343,
-                                             661379,661058,660415,660737,660094,659773,659130,658809,658487,658166,657523,657202,656559,655595,655274,654631,
-                                             654310,653346,652382,651418,651097,650454,650133,649490,649812,649169,649491,905465,905144,904823,904502,904181,
-                                             903860,903539,903218,902897,902576,902255,901934,900972,900651,900330,900009,899688,899367,899046,898725,898404,
-                                             896479,896158,895837,895516,895195,894874,894553,891986,891665,891344,864054,863733,937235,936914),"affected",hex_grid$affected) # Few manual fixes @ 50m resolution hexes
-
-## Add a handful of ids on MV that are unaffected to above line, if pursuing analysis there
-
-ggplot() + # Checking layers
-  #geom_sf(data = hex_grid[hex_grid$loc=="Nantucket"&hex_grid$affected=="affected",], fill = "lightblue", color = "black", alpha = 0.5) +  # Hexagonal grid
-  geom_sf(data = hex_grid[hex_grid$affected=="affected",], fill = "lightblue", color = "black", alpha = 0.5) +
-  #geom_sf(data = ESI, color = "red", size = 1.5) +  # Line feature
-  #geom_sf(data = hullMV, color = "green", alpha = 0.5) +
-  theme_minimal()
-
-# st_write(hex_grid,"hex_grid50.gpkg")
-
-hex_union<-hex_grid %>% # Union based on two grouping variables
-  group_by(loc, affected) %>%
-  summarise(geometry = st_union(x), .groups = "drop")
-
-# st_write(st_transform(hex_union, crs = 4326),"hex_union.gpkg")
 
 # Downloading cell data ---------------------------------------------------
-
+df<-st_read("Data/GSNantucketSBeaches.gpkg") # AOI for Nantucket from satellite imagery
 ## Going to want higher res cell data home locations
 api_key<-read.csv(file = "APIkey.csv", header = FALSE)
 api_key<-api_key$V1
@@ -94,8 +96,8 @@ url<-"https://api.gravyanalytics.com/v1.1/areas/tradeareas" # API URL to query
 if (!dir.exists("tData")) { # Create cell data directory if it doesn't exist
   dir.create("tData", recursive = TRUE)
 }
-df<-hex_union %>% filter(affected == "affected") # Only interested in affected areas
-df$id<-seq(1,nrow(df),1) # API requires a variable named "id" to pass through the id to the files that are returned, named "searchobjectid" in the file
+#df<-hex_union %>% filter(affected == "affected") # Only interested in affected areas
+#df$id<-seq(1,nrow(df),1) # API requires a variable named "id" to pass through the id to the files that are returned, named "searchobjectid" in the file
 df<-st_transform(df, crs = 4326) # Needs to be projected in 4326 to work with lat long conventions of the API
 
 batchapi<-function(dft,s,e,fname){ # Function converts sf object to json, passes to api, gets returned data, and merges back with sf object
@@ -187,7 +189,7 @@ dfs<-map_df(list.files("tData/", pattern = "\\.parquet$", full.names = TRUE), re
 
 
 # Cell data tasks -------------------------------------------------------
-dfs$FEATUREID<-ifelse(dfs$FEATUREID==1,"Martha's Vineyard","Nantucket") # Location labels
+#dfs$FEATUREID<-ifelse(dfs$FEATUREID==1,"Martha's Vineyard","Nantucket") # Location labels
 
 dfs$EARLIEST_OBSERVATION_OF_DAY<-with_tz(as.POSIXct(dfs$EARLIEST_OBSERVATION_OF_DAY, format = "%Y-%m-%d %H:%M:%OS", tz = "UTC"), tzone = "America/New_York") # Set format to POSIXct in native UTC time zone, and convert to eastern time
 dfs$LATEST_OBSERVATION_OF_DAY<-with_tz(as.POSIXct(dfs$LATEST_OBSERVATION_OF_DAY, format = "%Y-%m-%d %H:%M:%OS", tz = "UTC"), tzone = "America/New_York")
@@ -199,8 +201,8 @@ dfs<-dfs %>% filter(instant == 0) # Dropping observations with no stay duration
 
 dfs$duration_min<-as.numeric(difftime(dfs$LATEST_OBSERVATION_OF_DAY,dfs$EARLIEST_OBSERVATION_OF_DAY,units = "secs"))/60
 dfs<-dfs %>% filter(duration_min>5) # 25% of observations are less than 5 minutes observed in the area, dropping those
-dfs$vd<-as.numeric(dfs$TOTAL_POPULATION)/as.numeric(dfs$DEVICES_WITH_DECISION_IN_CBG_COUNT) # Population normalized visits
-#dfs$vd<-1 # Each device as a visit
+#dfs$vd<-as.numeric(dfs$TOTAL_POPULATION)/as.numeric(dfs$DEVICES_WITH_DECISION_IN_CBG_COUNT) # Population normalized visits
+dfs$vd<-1 # Each device as a visit
 
 dfs %>% # Multiple decision locations for devices?
   group_by(DEVICEID) %>% # group_by(DEVICEID,year)
@@ -209,11 +211,11 @@ dfs %>% # Multiple decision locations for devices?
 
 # Visitation model --------------------------------------------------------
 df<-dfs %>% 
-  group_by(DAY_IN_FEATURE,FEATUREID) %>% 
+  group_by(DAY_IN_FEATURE) %>% 
   summarise(visits = sum(vd,na.rm = TRUE)) %>% 
   mutate(year = as.factor(year(DAY_IN_FEATURE)), dayofmonth = format(as.Date(DAY_IN_FEATURE),"%m-%d")) 
 
-ggplot(df %>% filter(FEATUREID == "Nantucket"), aes(x = dayofmonth, y = visits, color = year, group = year)) +
+ggplot(df, aes(x = dayofmonth, y = visits, color = year, group = year)) +
   geom_line() +
   labs(x = "Day", y = "Visits", color = "Year") +
   theme_minimal() +
@@ -246,7 +248,7 @@ df<-df %>% mutate(date = as.Date(DAY_IN_FEATURE)) %>% ungroup() %>% select(!DAY_
   left_join(wth, by = "date")
 rm(wth)
 
-nt<-df %>% filter(FEATUREID == "Nantucket")
+nt<-df #%>% filter(FEATUREID == "Nantucket")
 
 nt<-nt %>% mutate(
     post = (date >= "2024-07-16"),
