@@ -111,7 +111,7 @@ batchapi<-function(dft,s,e,fname){ # Function converts sf object to json, passes
   dftj<-sf_geojson(dft,atomise = FALSE) # Convert sf object to GeoJSON
 
   dftj<-fromJSON(dftj) # Doesn't seem to like geojson formatting, switching to json
-  dftj<-toJSON(dftj, auto_unbox = TRUE)
+  dftj<-toJSON(dftj, auto_unbox = TRUE, digits = 15)
 
   # Export query (asynchronous)
   system.time(response<-POST(url, headers, body = dftj, encode = "json", query = list(
