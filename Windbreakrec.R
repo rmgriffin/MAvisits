@@ -84,10 +84,10 @@ rm(files, folder, folder_url, dl)
 # 
 # # st_write(st_transform(hex_union, crs = 4326),"hex_union.gpkg")
 
-
-
 # Downloading cell data ---------------------------------------------------
 df<-st_read("Data/GSNantucketSBeaches.gpkg") # AOI for Nantucket from satellite imagery
+dg<-st_simplify(st_read("Data/nantucket_terminal_osm_extracted.gpkg"),dTolerance = 0.00001)
+dg<-st_read("Data/nantucket_terminal_osm_extracted.gpkg")
 ## Going to want higher res cell data home locations
 api_key<-read.csv(file = "APIkey.csv", header = FALSE)
 api_key<-api_key$V1
@@ -187,6 +187,91 @@ batchapi(df, s = as.numeric(as.POSIXct("2024-06-15 00:00:00.000", tz = "America/
 
 dfs<-map_df(list.files("tData/", pattern = "\\.parquet$", full.names = TRUE), read_parquet)
 
+url<-"https://api.gravyanalytics.com/v1.1/areas/devices/trends"
+
+batchapi<-function(dft,s,e,fname){ # Function converts sf object to json, passes to api, gets returned data, and merges back with sf object
+  
+  dft$startDateTimeEpochMS<-s # 1704067200000 These work as query variables
+  dft$endDateTimeEpochMS<-e # 1706831999000
+  dft$excludeFlags<-25216 # Corresponds to guidance for visitation from venntel
+  # dft$startDateTimeEpochMS<-1656633600000
+  # dft$endDateTimeEpochMS<-1659311999999
+  # dft$returnDeviceCountByGeoHash<-TRUE
+  #dft<-dft %>% select(-PUD_YR_AVG) # Need more than the geometry column to create a feature collection using sf_geojson. Also, there is a limit of 20 features per request (even if it doesn't return results for 20 features).
+  dftj<-sf_geojson(dft,atomise = FALSE) # Convert sf object to GeoJSON
+  
+  dftj<-fromJSON(dftj) # Doesn't seem to like geojson formatting, switching to json
+  dftj<-toJSON(dftj, auto_unbox = TRUE,digits = 15)
+  
+  # Export query (asynchronous)
+  system.time(response<-POST(url, headers, body = dftj, encode = "json", query = list(
+    # includeHeaders = FALSE, # Remove headers - potentially useful for batching
+    # returnDeviceCountByGeoHash = TRUE, # "If true, the geoHashDeviceCount and geoHashWidthHeights fields are populated per feature" - don't see this. It does return "searchobjectid" in the response psv that corresponds to a given "id" in the json properties
+    #decisionLocationTypes = list(c("LATLNG","CBG")),
+    #decisionLocationTypes = "CBG",
+    #includeAdditionalCbgInfo = TRUE,
+    #startTimeOfDay = "09:00:00Z", # Need to adjust for timezone when binning "daily visits" - this adjusts UTC ("Z") to Eastern Time
+    #endTimeOfDay = "23:59:59Z",
+    #includeGeometryWithCbgInfo = TRUE, # Geometry of CBG for GIS
+    #exportSchema = "EVENING_COMMON_CLUSTERS",
+    compressOutputFiles = FALSE, # Compressed outputs?
+    responseType = "EXPORT"  # Requesting an export response
+  )))
+  
+  requestID<-response$headers$requestid
+  status_url<-paste0("https://api.gravyanalytics.com/v1.1/requestStatus/", requestID)
+  export_complete<-FALSE
+  
+  # Function that pings the API to see if the export request is done every 1 seconds and returns either of {files ready, still waiting, failed}
+  while (!export_complete) {
+    Sys.sleep(1)  # Wait for 1 seconds before polling again
+    status_response<-GET(status_url, add_headers(Authorization = api_key))
+    status_content<-content(status_response, "parsed")
+    
+    if (status_content$status == "DONE") {
+      export_complete<-TRUE
+      aws_s3_link<-as.character(status_content$presignedUrlsByDataType$deviceTrends)
+      base::cat("Your files are ready")
+    } else if (status_content$status == "FAILED") {
+      stop("Export request failed. Please try again.")
+    } else {
+      base::cat("Export is still in progress. Status:", round(status_content$requestDurationSeconds/60,2),"m", "\n",sep = c(" ","","",""))
+    }
+  }
+  
+  # Loading export results into workspace -----------------------------------
+  
+  file_name<-sub("\\?.*", "", basename(aws_s3_link)) # Extracting the file name
+  
+  downloaded_files<-lapply(seq_along(aws_s3_link), function(i) { # Batch downloading all links returned by the API call. Mode = "wb" is important.
+    file_path<-file.path("tData", file_name[i]) # Construct full path
+    download.file(aws_s3_link[i], destfile = file_path, mode = "wb") # Download file
+    return(file_path) # Return the file path
+  })
+  downloaded_files<-unlist(downloaded_files)
+  
+  xp<-do.call(rbind, # Row bind files into a dataframe
+              lapply( # Apply over all elements in a list
+                file.path("tData/", sub("\\.gz$", "", file_name)), # Elements in a list that are named based on the API call
+                function(file) {read.csv(file, sep = "|", header = TRUE)})) # Reading files in
+  
+  invisible(unlink(downloaded_files)) # Deleting downloaded psv files
+  
+  if (is.null(xp) || nrow(xp) == 0) { # Handles no data situations where there are no observations in the provided polygon(s)
+    warning("No data returned from API for this batch. Skipping...")
+    return(NULL)  # Return NULL to avoid stopping execution
+  }
+  
+  #xp<-merge(xp,dft, by.x = "FEATUREID", by.y = "id") # %>% dplyr::select(FEATUREID,DEVICEID,DAY_IN_FEATURE,EARLIEST_OBSERVATION_OF_DAY,LATEST_OBSERVATION_OF_DAY,LATITUDE,LONGITUDE,CENSUS_BLOCK_GROUP_ID,startDateTimeEpochMS,endDateTimeEpochMS,DEVICES_WITH_DECISION_IN_CBG_COUNT,TOTAL_POPULATION)
+  #xp<-xp %>% dplyr::select(FEATUREID,DEVICEID,DAY_IN_FEATURE,EARLIEST_OBSERVATION_OF_DAY,LATEST_OBSERVATION_OF_DAY,CENSUS_BLOCK_GROUP_ID,DEVICES_WITH_DECISION_IN_CBG_COUNT,TOTAL_POPULATION)
+  
+  write_parquet(xp, paste0("tData/",fname,".parquet")) # Write to parquet file to save space, versus csv
+}
+
+batchapi(dg, s = as.numeric(as.POSIXct("2022-07-01 00:00:00.000", tz = "America/New_York")) * 1000,
+         e = as.numeric(as.POSIXct("2025-05-31 23:59:59.999", tz = "America/New_York")) * 1000, fname = "Airportvisittrends20220701_20250531") # Jul 2022 - May 2025
+
+dgs<-read_parquet("tData/Airportvisittrends20220701_20250531.parquet")
 
 # Cell data tasks -------------------------------------------------------
 #dfs$FEATUREID<-ifelse(dfs$FEATUREID==1,"Martha's Vineyard","Nantucket") # Location labels
