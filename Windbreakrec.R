@@ -87,8 +87,8 @@ rm(files, folder, folder_url, dl)
 # Downloading cell data ---------------------------------------------------
 df<-st_read("Data/GSNantucketSBeaches.gpkg") # AOI for Nantucket from satellite imagery
 dg<-st_simplify(st_read("Data/nantucket_terminal_osm_extracted.gpkg"),dTolerance = 0.00001)
-dg<-st_read("Data/nantucket_terminal_osm_extracted.gpkg")
-## Going to want higher res cell data home locations
+dg<-st_read("Data/nantucket_terminal_osm_extracted.gpkg") %>% dplyr::filter(name == "Nantucket Terminal 2")
+## Want higher res cell data home locations?
 api_key<-read.csv(file = "APIkey.csv", header = FALSE)
 api_key<-api_key$V1
 headers<-add_headers(Authorization = api_key, `Content-Type` = "application/json") # Set up the headers including the API key
@@ -99,6 +99,7 @@ if (!dir.exists("tData")) { # Create cell data directory if it doesn't exist
 #df<-hex_union %>% filter(affected == "affected") # Only interested in affected areas
 #df$id<-seq(1,nrow(df),1) # API requires a variable named "id" to pass through the id to the files that are returned, named "searchobjectid" in the file
 df<-st_transform(df, crs = 4326) # Needs to be projected in 4326 to work with lat long conventions of the API
+dg<-st_transform(dg, crs = 4326)
 
 batchapi<-function(dft,s,e,fname){ # Function converts sf object to json, passes to api, gets returned data, and merges back with sf object
 
@@ -112,9 +113,15 @@ batchapi<-function(dft,s,e,fname){ # Function converts sf object to json, passes
 
   dftj<-fromJSON(dftj) # Doesn't seem to like geojson formatting, switching to json
   dftj<-toJSON(dftj, auto_unbox = TRUE, digits = 15)
+  ae<-all.equal(st_geometry(df), st_geometry(st_read(dftj)), check.attributes = FALSE) # Confirming geometries of st_read(JSON) match original geometries
+  if (isTRUE(ae)) {
+    message("Geometry conversion to JSON consistent")
+  } else {
+    warning("Geometry conversion to JSON inconsistent", paste(ae, collapse = "; "))
+  }
 
   # Export query (asynchronous)
-  system.time(response<-POST(url, headers, body = dftj, encode = "json", query = list(
+  response<-POST(url, headers, body = dftj, encode = "json", query = list(
     # includeHeaders = FALSE, # Remove headers - potentially useful for batching
     # returnDeviceCountByGeoHash = TRUE, # "If true, the geoHashDeviceCount and geoHashWidthHeights fields are populated per feature" - don't see this. It does return "searchobjectid" in the response psv that corresponds to a given "id" in the json properties
     #decisionLocationTypes = list(c("LATLNG","CBG")),
@@ -126,7 +133,7 @@ batchapi<-function(dft,s,e,fname){ # Function converts sf object to json, passes
     exportSchema = "EVENING_COMMON_CLUSTERS",
     compressOutputFiles = FALSE, # Compressed outputs?
     responseType = "EXPORT"  # Requesting an export response
-  )))
+  ))
 
   requestID<-response$headers$requestid
   status_url<-paste0("https://api.gravyanalytics.com/v1.1/requestStatus/", requestID)
@@ -178,12 +185,10 @@ batchapi<-function(dft,s,e,fname){ # Function converts sf object to json, passes
   write_parquet(xp, paste0("tData/",fname,".parquet")) # Write to parquet file to save space, versus csv
 }
 
-batchapi(df, s = as.numeric(as.POSIXct("2022-06-15 00:00:00.000", tz = "America/New_York")) * 1000,
-         e = as.numeric(as.POSIXct("2022-08-15 23:59:59.999", tz = "America/New_York")) * 1000, fname = "JunAug2022daylight50m") # Jun - Aug 2022
 batchapi(df, s = as.numeric(as.POSIXct("2023-06-15 00:00:00.000", tz = "America/New_York")) * 1000,
-         e = as.numeric(as.POSIXct("2023-08-15 23:59:59.999", tz = "America/New_York")) * 1000, fname = "JunAug2023daylight50m") # Jun - Aug 2023
+         e = as.numeric(as.POSIXct("2023-08-15 23:59:59.999", tz = "America/New_York")) * 1000, fname = "JunAug2023daylight") # Jun - Aug 2023
 batchapi(df, s = as.numeric(as.POSIXct("2024-06-15 00:00:00.000", tz = "America/New_York")) * 1000,
-         e = as.numeric(as.POSIXct("2024-08-15 23:59:59.999", tz = "America/New_York")) * 1000, fname = "JunAug2024daylight50m") # Jun - Aug 2024
+         e = as.numeric(as.POSIXct("2024-08-15 23:59:59.999", tz = "America/New_York")) * 1000, fname = "JunAug2024daylight") # Jun - Aug 2024
 
 dfs<-map_df(list.files("tData/", pattern = "\\.parquet$", full.names = TRUE), read_parquet)
 
@@ -273,7 +278,38 @@ batchapi(dg, s = as.numeric(as.POSIXct("2022-07-01 00:00:00.000", tz = "America/
 
 dgs<-read_parquet("tData/Airportvisittrends20220701_20250531.parquet")
 
-# Cell data tasks -------------------------------------------------------
+# Calibration model -------------------------------------------------------
+pl<-read.csv("Data/Planements.csv")
+
+plR<-pl %>% # Planements by month
+  group_by(Month,Total.Route) %>% 
+  filter(Total.Route == "R") %>% 
+  summarise(Enplanements = sum(Enplanements,na.rm = TRUE),Deplanements = sum(Deplanements,na.rm = TRUE)) %>% 
+  mutate(RatioEnDe = Enplanements/Deplanements) %>% 
+  { print(., n = nrow(.)) }
+
+plt<-pl %>% 
+  filter(Total.Route == "T") %>%
+  left_join(plR %>% dplyr::select(Month,RatioEnDe), by = "Month") %>% 
+  dplyr::select(!c(Total.Route,Airline,Airline,Plane.Capacity,Source)) %>% 
+  mutate(Deplanements = round(Enplanements/RatioEnDe,0)) %>% 
+  mutate(Planements = Deplanements + Enplanements)
+  
+
+# pl %>% # Planements by year
+#   group_by(Year,Total.Route) %>% 
+#   summarise(Enplanements = sum(Enplanements,na.rm = TRUE),Deplanements = sum(Deplanements,na.rm = TRUE)) %>% 
+#   mutate(RatioEnDe = Enplanements/Deplanements) 
+# 
+# pl %>% # Planements overall
+#   group_by(Total.Route) %>% 
+#   summarise(Enplanements = sum(Enplanements,na.rm = TRUE),Deplanements = sum(Deplanements,na.rm = TRUE)) %>% 
+#   mutate(RatioEnDe = Enplanements/Deplanements) 
+
+
+# Visitation model --------------------------------------------------------
+
+
 #dfs$FEATUREID<-ifelse(dfs$FEATUREID==1,"Martha's Vineyard","Nantucket") # Location labels
 
 dfs$EARLIEST_OBSERVATION_OF_DAY<-with_tz(as.POSIXct(dfs$EARLIEST_OBSERVATION_OF_DAY, format = "%Y-%m-%d %H:%M:%OS", tz = "UTC"), tzone = "America/New_York") # Set format to POSIXct in native UTC time zone, and convert to eastern time
