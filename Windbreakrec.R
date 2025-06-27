@@ -281,21 +281,6 @@ dgs<-read_parquet("tData/Airportvisittrends20220701_20250531.parquet")
 # Calibration model -------------------------------------------------------
 pl<-read.csv("Data/Planements.csv")
 
-plR<-pl %>% # Planements by month
-  group_by(Month,Total.Route) %>% 
-  filter(Total.Route == "R") %>% 
-  summarise(Enplanements = sum(Enplanements,na.rm = TRUE),Deplanements = sum(Deplanements,na.rm = TRUE)) %>% 
-  mutate(RatioEnDe = Enplanements/Deplanements) %>% 
-  { print(., n = nrow(.)) }
-
-plt<-pl %>% 
-  filter(Total.Route == "T") %>%
-  left_join(plR %>% dplyr::select(Month,RatioEnDe), by = "Month") %>% 
-  dplyr::select(!c(Total.Route,Airline,Airline,Plane.Capacity,Source)) %>% 
-  mutate(Deplanements = round(Enplanements/RatioEnDe,0)) %>% 
-  mutate(Planements = Deplanements + Enplanements)
-  
-
 # pl %>% # Planements by year
 #   group_by(Year,Total.Route) %>% 
 #   summarise(Enplanements = sum(Enplanements,na.rm = TRUE),Deplanements = sum(Deplanements,na.rm = TRUE)) %>% 
@@ -306,6 +291,51 @@ plt<-pl %>%
 #   summarise(Enplanements = sum(Enplanements,na.rm = TRUE),Deplanements = sum(Deplanements,na.rm = TRUE)) %>% 
 #   mutate(RatioEnDe = Enplanements/Deplanements) 
 
+plR<-pl %>% # Planements by month
+  group_by(Month) %>% 
+  filter(Total.Route == "R") %>% 
+  summarise(Enplanements = sum(Enplanements,na.rm = TRUE),Deplanements = sum(Deplanements,na.rm = TRUE)) %>% 
+  mutate(RatioEnDe = Enplanements/Deplanements) %>% 
+  { print(., n = nrow(.)) }
+
+pl<-pl %>% 
+  filter(Total.Route == "T") %>%
+  left_join(plR %>% dplyr::select(Month,RatioEnDe), by = "Month") %>% 
+  dplyr::select(!c(Total.Route,Airline,Airline,Plane.Capacity,Source)) %>% 
+  mutate(Deplanements = round(Enplanements/RatioEnDe,0)) %>% 
+  mutate(Planements = Deplanements + Enplanements)
+
+dgs<-dgs %>% 
+  filter(DATE_TYPE == "DAY",SEARCHOBJECTID == "way/100896025") %>% # There's a second small terminal for private charters, filtering out
+  mutate(Year = year(DATE_VALUE), Month = month(DATE_VALUE)) %>% 
+  group_by(Year,Month) %>% 
+  summarise(counts = sum(DEVICE_COUNT))
+  
+pl<-inner_join(pl,dgs, by = c("Year","Month")) %>% # Matching only on common months and years
+  mutate(ratio = Planements/counts)
+
+r2_labels <- pl %>%
+  group_by(Year) %>%
+  do({
+    model <- lm(Planements ~ counts, data = .)
+    data.frame(
+      r2 = summary(model)$r.squared,
+      x = max(.$Planements, na.rm = TRUE),
+      y = max(.$counts, na.rm = TRUE)
+    )
+  })
+
+ggplot(pl, aes(x = Planements, y = counts)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", se = FALSE) +
+  geom_text(
+    data = r2_labels,
+    aes(x = x, y = y, label = paste0("R² = ", round(r2, 2))),
+    inherit.aes = FALSE,
+    hjust = 1, vjust = 1
+  ) +
+  facet_wrap(~ Year) +
+  theme_minimal() 
 
 # Visitation model --------------------------------------------------------
 
