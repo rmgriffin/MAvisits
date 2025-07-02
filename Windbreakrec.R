@@ -4,7 +4,7 @@ rm(list=ls()) # Clears workspace
 # install.packages("renv") # Install/call libraries
 # renv::init()
 
-PKG<-c("googledrive","sf","tidyverse","httpuv","R.utils","httr","jsonlite","geojsonsf","lwgeom","furrr","arrow","stringr","sandwich","lmtest","fixest")
+PKG<-c("googledrive","sf","tidyverse","httpuv","R.utils","httr","jsonlite","geojsonsf","lwgeom","furrr","arrow","stringr","sandwich","lmtest","fixest","digest","geosphere")
 
 for (p in PKG) {
   if(!require(p,character.only = TRUE)) {  
@@ -86,7 +86,7 @@ rm(files, folder, folder_url, dl)
 
 # Downloading cell data ---------------------------------------------------
 df<-st_read("Data/GSNantucketSBeaches.gpkg") # AOI for Nantucket from satellite imagery
-dg<-st_simplify(st_read("Data/nantucket_terminal_osm_extracted.gpkg"),dTolerance = 0.00001)
+df<-st_simplify(df,dTolerance = 0.00001)
 dg<-st_read("Data/nantucket_terminal_osm_extracted.gpkg") %>% dplyr::filter(name == "Nantucket Terminal 2")
 ## Want higher res cell data home locations?
 api_key<-read.csv(file = "APIkey.csv", header = FALSE)
@@ -97,7 +97,12 @@ if (!dir.exists("tData")) { # Create cell data directory if it doesn't exist
   dir.create("tData", recursive = TRUE)
 }
 #df<-hex_union %>% filter(affected == "affected") # Only interested in affected areas
-#df$id<-seq(1,nrow(df),1) # API requires a variable named "id" to pass through the id to the files that are returned, named "searchobjectid" in the file
+df<-df %>% # Union of areas for effect status
+  mutate(geom = st_make_valid(geom)) %>%
+  group_by(Affected) %>%
+  summarise(geom = st_union(geom), .groups = "drop") %>%
+  st_as_sf()
+df$id<-seq(1,nrow(df),1) # API requires a variable named "id" to pass through the id to the files that are returned, named "searchobjectid" in the file
 df<-st_transform(df, crs = 4326) # Needs to be projected in 4326 to work with lat long conventions of the API
 dg<-st_transform(dg, crs = 4326)
 
@@ -192,16 +197,16 @@ batchapi(df, s = as.numeric(as.POSIXct("2024-06-15 00:00:00.000", tz = "America/
 
 dfs<-map_df(list.files("tData/", pattern = "\\.parquet$", full.names = TRUE), read_parquet)
 
-url<-"https://api.gravyanalytics.com/v1.1/areas/devices/trends"
+# Calibration model -------------------------------------------------------
+url<-"https://api.gravyanalytics.com/v1.1/observations/geo/search" 
 
 batchapi<-function(dft,s,e,fname){ # Function converts sf object to json, passes to api, gets returned data, and merges back with sf object
   
-  dft$startDateTimeEpochMS<-s # 1704067200000 These work as query variables
-  dft$endDateTimeEpochMS<-e # 1706831999000
+  dft$startDateTimeEpochMS<-s  
+  dft$endDateTimeEpochMS<-e
   dft$excludeFlags<-25216 # Corresponds to guidance for visitation from venntel
-  # dft$startDateTimeEpochMS<-1656633600000
-  # dft$endDateTimeEpochMS<-1659311999999
-  # dft$returnDeviceCountByGeoHash<-TRUE
+  # dft$startDateTimeEpochMS<-as.numeric(as.POSIXct("2022-08-01 00:00:00.000", tz = "America/New_York")) * 1000
+  # dft$endDateTimeEpochMS<-as.numeric(as.POSIXct("2025-05-31 00:00:00.000", tz = "America/New_York")) * 1000
   #dft<-dft %>% select(-PUD_YR_AVG) # Need more than the geometry column to create a feature collection using sf_geojson. Also, there is a limit of 20 features per request (even if it doesn't return results for 20 features).
   dftj<-sf_geojson(dft,atomise = FALSE) # Convert sf object to GeoJSON
   
@@ -235,7 +240,7 @@ batchapi<-function(dft,s,e,fname){ # Function converts sf object to json, passes
     
     if (status_content$status == "DONE") {
       export_complete<-TRUE
-      aws_s3_link<-as.character(status_content$presignedUrlsByDataType$deviceTrends)
+      aws_s3_link<-as.character(status_content$presignedUrlsByDataType$`observations-geo`)
       base::cat("Your files are ready")
     } else if (status_content$status == "FAILED") {
       stop("Export request failed. Please try again.")
@@ -273,12 +278,167 @@ batchapi<-function(dft,s,e,fname){ # Function converts sf object to json, passes
   write_parquet(xp, paste0("tData/",fname,".parquet")) # Write to parquet file to save space, versus csv
 }
 
-batchapi(dg, s = as.numeric(as.POSIXct("2022-07-01 00:00:00.000", tz = "America/New_York")) * 1000,
-         e = as.numeric(as.POSIXct("2025-05-31 23:59:59.999", tz = "America/New_York")) * 1000, fname = "Airportvisittrends20220701_20250531") # Jul 2022 - May 2025
+batchapi(dg, s = as.numeric(as.POSIXct("2022-08-01 00:00:00.000", tz = "America/New_York")) * 1000,
+         e = as.numeric(as.POSIXct("2025-05-31 23:59:59.999", tz = "America/New_York")) * 1000, fname = "Airportvisittrends20220801_20250531") # Aug 2022 - May 2025
 
-dgs<-read_parquet("tData/Airportvisittrends20220701_20250531.parquet")
+dgs<-read_parquet("tData/Airportvisittrends20220801_20250531.parquet")
 
-# Calibration model -------------------------------------------------------
+
+url<-"https://api.gravyanalytics.com/v1.1/observations/registrationID/search" 
+
+ids<-as.list(unique(dgs$REGISTRATION_ID))
+
+polapi<-function(ids,s,e,fpath,fname_prefix = "batch_"){
+  request_body<-list(registrationIDs = ids)
+  
+  json_data<-toJSON(request_body, auto_unbox = TRUE, pretty = TRUE) # JSON validator https://geojsonlint.com/ 
+  
+  response <- POST(url, headers, body = json_data, encode = "json", query = list(
+    responseType = "EXPORT",  # Requesting an export response
+    # startDateTimeEpochMS = as.numeric(as.POSIXct("2022-08-01 00:00:00.000", tz = "America/New_York")) * 1000,
+    # endDateTimeEpochMS = as.numeric(as.POSIXct("2025-05-31 00:00:00.000", tz = "America/New_York")) * 1000,
+    startDateTimeEpochMS = s,
+    endDateTimeEpochMS = e,
+    returnObservations = TRUE,
+    compressOutputFiles = FALSE, # Compressed outputs?
+    observationLocationTypes = "LATLNG" # Uses a geohash approach for returning results. Default is 3 decimal places (~110m resolution) 
+  ))
+  
+  if (status_code(response) != 200) {
+    if (length(ids) > 1) { # Batch failed: break into individual calls
+      message("Batch failed with status ", status_code(response), ". Retrying individually...")
+      for (i in seq_along(ids)) {
+        single_id <- ids[[i]]
+        polapi(single_id, s, e, fpath = fpath, fname_prefix = paste0("retry_", fname_prefix))
+      }
+    } else { # Single item failed: log and skip
+      id_val <- as.character(ids[[1]])
+      message(id_val, " failed with status ", status_code(response),
+              " and request id ", response$headers$requestid, ". Skipping.")
+    }
+    return(invisible(NULL))
+  }
+  
+  requestID<-response$headers$requestid
+  status_url<-paste0("https://api.gravyanalytics.com/v1.1/requestStatus/", requestID)
+  export_complete<-FALSE
+  
+  # Ping the API periodically and report status
+  while (!export_complete) {
+    Sys.sleep(10)  # Wait for 10 seconds before polling again
+    status_response <- GET(status_url, add_headers(Authorization = api_key))
+    status_content <- content(status_response, "parsed")
+    
+    if (status_content$status == "DONE") {
+      export_complete <- TRUE
+      if (!is.null(status_content$message) && status_content$message == "No files were exported") {
+        message(paste(ids, collapse = ", "),
+                " API query completed (status ", status_code(response),
+                ") but no files were exported")
+        return(invisible(NULL))
+      }
+      aws_s3_link <- as.character(status_content$presignedUrlsByDataType$`observations-id`)
+      base::cat("Your files are ready.\n")} 
+    
+    else {
+      base::cat("Export is still in progress. Status:",
+                round(status_content$requestDurationSeconds / 60, 2), "m\n")
+    }
+  }
+  
+  # Loading export results into workspace -----------------------------------
+  
+  file_name<-sub("\\?.*", "", basename(aws_s3_link)) # Extracting the file name
+  
+  downloaded_files<-lapply(seq_along(aws_s3_link), function(i) { # Batch downloading all links returned by the API call. Mode = "wb" is important.
+    file_path<-file.path("tData", file_name[i]) # Construct full path
+    download.file(aws_s3_link[i], destfile = file_path, mode = "wb") # Download file
+    return(file_path) # Return the file path
+  })
+  downloaded_files<-unlist(downloaded_files)
+  
+  xp<-do.call(rbind, # Row bind files into a dataframe
+              lapply( # Apply over all elements in a list
+                file.path("tData/", sub("\\.gz$", "", file_name)), # Elements in a list that are named based on the API call
+                function(file) {read.csv(file, sep = "|", header = TRUE)})) # Reading files in
+  
+  invisible(unlink(downloaded_files)) # Deleting downloaded psv files
+  
+  if (is.null(xp) || nrow(xp) == 0) { # Handles no data situations where there are no observations in the provided polygon(s)
+    warning("No data returned from API for this batch. Skipping...")
+    return(NULL)  # Return NULL to avoid stopping execution
+  }
+  
+  #xp<-merge(xp,dft, by.x = "FEATUREID", by.y = "id") # %>% dplyr::select(FEATUREID,DEVICEID,DAY_IN_FEATURE,EARLIEST_OBSERVATION_OF_DAY,LATEST_OBSERVATION_OF_DAY,LATITUDE,LONGITUDE,CENSUS_BLOCK_GROUP_ID,startDateTimeEpochMS,endDateTimeEpochMS,DEVICES_WITH_DECISION_IN_CBG_COUNT,TOTAL_POPULATION)
+  #xp<-xp %>% dplyr::select(FEATUREID,DEVICEID,DAY_IN_FEATURE,EARLIEST_OBSERVATION_OF_DAY,LATEST_OBSERVATION_OF_DAY,CENSUS_BLOCK_GROUP_ID,DEVICES_WITH_DECISION_IN_CBG_COUNT,TOTAL_POPULATION)
+  
+  # Construct output filename
+  if (length(ids) == 1) {
+    fname<-paste0(fname_prefix, as.character(ids[[1]]))
+  } else {
+    id_hash<-digest::digest(paste0(sort(unique(as.character(ids))), collapse = "_"))
+    fname<-paste0(fname_prefix, id_hash)
+  }
+  
+  write_parquet(xp, paste0(fpath,fname,".parquet")) # Write to parquet file to save space, versus csv
+}
+
+split_ids<-unname(split(ids, ceiling(seq_along(ids)/1000))) # Pattern of life api can only handle 1000 registration ids per query
+
+plan(sequential)
+plan(multisession, workers = 2) # Initializing parallel processing, API can only handle two concurrent connections
+set.seed(12)
+
+# polapi(split_ids[[1]],s = as.numeric(as.POSIXct("2022-08-01 00:00:00.000", tz = "America/New_York")) * 1000,e = as.numeric(as.POSIXct("2025-05-31 23:59:59.999", tz = "America/New_York")) * 1000,fpath = "tData/")
+
+system.time(future_imap(
+  split_ids,
+  function(data, index) {
+    cat("Processing index:", index, "\n")
+    polapi(
+      data,
+      s = as.numeric(as.POSIXct("2022-08-01 00:00:00.000", tz = "America/New_York")) * 1000,
+      e = as.numeric(as.POSIXct("2025-05-31 23:59:59.999", tz = "America/New_York")) * 1000,
+      fpath = "tData/" # Filepath of output
+    )
+  },
+  .options = furrr_options(
+    packages = c("R.utils", "httr", "tidyverse", "jsonlite", "sf", "geojsonsf", "lwgeom", "furrr", "arrow","digest"),
+    seed = TRUE
+  ),
+  .progress = TRUE
+))
+
+dds<-map_df(list.files("tData/", pattern = "^batch_.*\\.parquet$", full.names = TRUE), read_parquet)
+
+
+dgs$date<-as.Date(as.POSIXct(dgs$TIMESTAMP_EPOCH_MS / 1000, origin = "1970-01-01", tz = "UTC"), tz = "America/New_York")
+
+dds$date<-as.Date(as.POSIXct(dds$TIMESTAMP_EPOCH_MS / 1000, origin = "1970-01-01", tz = "UTC"), tz = "America/New_York")
+
+movement_summary <- dgs %>%
+  group_by(REGISTRATION_ID, date) %>%
+  slice_min(order_by = TIMESTAMP_EPOCH_MS, n = 1, with_ties = FALSE) %>%
+  rename(
+    LAT_REF = LATITUDE,
+    LON_REF = LONGITUDE,
+    FIRST_TIME_MS = TIMESTAMP_EPOCH_MS
+  ) %>%
+  select(REGISTRATION_ID, date, LAT_REF, LON_REF, FIRST_TIME_MS) %>%
+  inner_join(dds, by = c("REGISTRATION_ID", "date")) %>%
+  filter(TIMESTAMP_EPOCH_MS > FIRST_TIME_MS) %>%
+  mutate(dist_from_ref_km = distHaversine(
+    cbind(LONGITUDE, LATITUDE),
+    cbind(LON_REF, LAT_REF)
+  )/1000) %>%
+  group_by(REGISTRATION_ID, date) %>%
+  summarize(
+    moved_far = any(dist_from_ref_km > 40),
+    max_dist_m = max(dist_from_ref_km),
+    .groups = "drop"
+  )
+
+
 pl<-read.csv("Data/Planements.csv")
 
 # pl %>% # Planements by year
