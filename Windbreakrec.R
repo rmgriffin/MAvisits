@@ -506,6 +506,8 @@ ggplot(ms, aes(x = Enplanements, y = counts_enplaned)) +
   facet_wrap(~ year) +
   theme_minimal() 
 
+cf<-ms %>% filter(month_year == "2024-07") %>% select(ratio_enplaned) %>% as.numeric() # Conversion factor for July 2024
+
 # Visitation model --------------------------------------------------------
 
 
@@ -522,7 +524,7 @@ dfs<-dfs %>% filter(instant == 0) # Dropping observations with no stay duration
 dfs$duration_min<-as.numeric(difftime(dfs$LATEST_OBSERVATION_OF_DAY,dfs$EARLIEST_OBSERVATION_OF_DAY,units = "secs"))/60
 dfs<-dfs %>% filter(duration_min>5) # 25% of observations are less than 5 minutes observed in the area, dropping those
 #dfs$vd<-as.numeric(dfs$TOTAL_POPULATION)/as.numeric(dfs$DEVICES_WITH_DECISION_IN_CBG_COUNT) # Population normalized visits
-dfs$vd<-1 # Each device as a visit
+dfs$vd<-1 # Each device as a visitor day
 
 dfs %>% # Multiple decision locations for devices?
   group_by(DEVICEID) %>% # group_by(DEVICEID,year)
@@ -530,16 +532,19 @@ dfs %>% # Multiple decision locations for devices?
   count(has_variation)
 
 # Visitation model --------------------------------------------------------
-df<-dfs %>% 
-  group_by(DAY_IN_FEATURE) %>% 
+df<-dfs %>% # FeatureID {3 - Affected areas, 2 - Unaffected areas, 1 - Maybe affected areas (inland marsh areas adjacent to affected areas)}
+  group_by(DAY_IN_FEATURE,FEATUREID) %>% 
   summarise(visits = sum(vd,na.rm = TRUE)) %>% 
   mutate(year = as.factor(year(DAY_IN_FEATURE)), dayofmonth = format(as.Date(DAY_IN_FEATURE),"%m-%d")) 
 
 ggplot(df, aes(x = dayofmonth, y = visits, color = year, group = year)) +
   geom_line() +
   labs(x = "Day", y = "Visits", color = "Year") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)) +
+  geom_vline(xintercept = "07-16", linetype = "dashed", color = "black") +
   theme_minimal() +
-  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+  scale_x_discrete(breaks = unique(df$dayofmonth)[seq(1, length(unique(df$dayofmonth)), by = 14)]) +
+  facet_wrap(~FEATUREID)
 
 # df$weekendholiday<-ifelse(df$year==2022 & df$dayofmonth %in% c(2,3,4,9,10,16,17,23,24,30,31),1,
 #                           ifelse(df$year==2023 & df$dayofmonth %in% c(1,2,4,8,9,15,16,22,23,29,30),1,
@@ -568,22 +573,20 @@ df<-df %>% mutate(date = as.Date(DAY_IN_FEATURE)) %>% ungroup() %>% select(!DAY_
   left_join(wth, by = "date")
 rm(wth)
 
-nt<-df #%>% filter(FEATUREID == "Nantucket")
-
-nt<-nt %>% mutate(
+df<-df %>% 
+  mutate( # New variables
+    temp_bin = factor(cut(tempmaxF, breaks = c(60, 70, 80, 90, 100))),
     post = (date >= "2024-07-16"),
     treated_day = as.integer(post), # Indicator for treated/untreated
-    day_of_week = weekdays(as.Date(date))) %>% # Day of week
-  dplyr::select(-post)
-
-nt<-nt %>% 
-  mutate(temp_bin = cut(tempmaxF, breaks = c(60, 70, 80, 90, 100)))
-
-nt$hot<-ifelse(nt$tempmaxF>80,1,0)
-
-nt<-nt %>% 
-  mutate(
-    treat_day0 = as.integer(date == "2024-07-16"), # Short treatment window indicators
+    day_of_week = weekdays(as.Date(date)),
+    treat_dayn1 = as.integer(date == "2024-07-15"), # Short treatment window indicators, pre-trends
+    treat_dayn2 = as.integer(date == "2024-07-14"),
+    treat_dayn3 = as.integer(date == "2024-07-13"),
+    treat_dayn4 = as.integer(date == "2024-07-12"),
+    treat_dayn5 = as.integer(date == "2024-07-11"),
+    treat_dayn6 = as.integer(date == "2024-07-10"),
+    treat_dayn7 = as.integer(date == "2024-07-09"),
+    treat_day0 = as.integer(date == "2024-07-16"), # Short treatment window indicators, post-trends
     treat_day1 = as.integer(date == "2024-07-17"),
     treat_day2 = as.integer(date == "2024-07-18"),
     treat_day3 = as.integer(date == "2024-07-19"),
@@ -597,16 +600,12 @@ nt<-nt %>%
     treat_day11 = as.integer(date == "2024-07-27"),
     treat_day12 = as.integer(date == "2024-07-28"),
     treat_day13 = as.integer(date == "2024-07-29"),
-    treat_day14 = as.integer(date == "2024-07-30")
-  )
-
-nt<-nt %>% 
-  mutate(
-    pollution_mday = "07-16",  # month-day of real event
+    treat_day14 = as.integer(date == "2024-07-30"),
+    pollution_mday = "07-16",  # month-day of event
     pollution_date = as.Date(paste0(year, "-", pollution_mday)),
-    event_day = as.integer(date - pollution_date)
-  ) %>% 
-  dplyr::select(-c(pollution_date,pollution_mday))
+    event_day = as.integer(date - pollution_date),
+    affected = ifelse(FEATUREID==3,1,0)) %>% 
+  dplyr::select(-c(pollution_date,pollution_mday,post))
 
 # summary(model<-lm(visits ~ precIn + temp_bin, data = nt %>% filter(year == 2023)))
 # coeftest(model,vcov = vcovHC,type = "HC1") # Robust standard errors
@@ -615,25 +614,62 @@ nt<-nt %>%
 # 
 # model<-feols(visits ~ i(event_day, ref = -1) + precIn | year + day_of_week, vcov = "hetero", data = nt %>% filter(year %in% c("2023","2024"))) # cluster = ~ group
 
-model<-feols(visits ~ treat_day0 + treat_day1 + treat_day2 + treat_day3 + treat_day4 + treat_day5 + treat_day6 + treat_day7 + treat_day8 + treat_day9 + treat_day10 + treat_day11 + treat_day12 + treat_day13 + treat_day14 + precIn | year + dayofmonth + day_of_week, vcov = "hetero", data = nt %>% filter(year %in% c("2023","2024"))) # cluster = ~ group
+treat_vars <- c( # Treatment variables of interest
+  paste0("treat_dayn", 1:7),
+  paste0("treat_day", 0:14)
+)
 
-summary(model)
+models <- df %>%
+  filter(FEATUREID != 1) %>%
+  group_split(FEATUREID) %>%
+  set_names(c("North facing", "South facing")) %>%
+  map(~ feols(
+    as.formula(
+      paste("visits ~", paste(c(treat_vars, "precIn", "temp_bin"), collapse = " + "),
+            "| year + dayofmonth + day_of_week")
+    ),
+    data = .x,
+    vcov = "hetero"
+  ))
 
-coefs<-broom::tidy(model) %>%
-  filter(str_detect(term, "^treat_day\\d+$")) %>%  # Only keep treat_day* terms
-  mutate(
-    day = as.integer(str_remove(term, "treat_day")),
-    conf.low = estimate - 1.96 * std.error,
-    conf.high = estimate + 1.96 * std.error
-  )
+pretrend_tests <- map(models, ~ wald(.x, keep = "treat_dayn")) # Run joint test of pre-treatment coefficients for each model
+
+coefs <- imap_dfr(models, function(model, beach_label) {
+  broom::tidy(model) %>%
+    filter(str_detect(term, "^treat_day(n?\\d+)$")) %>%
+    mutate(
+      day = as.integer(str_replace(str_remove(term, "treat_day"), "^n", "-")),
+      estimate = estimate * cf,
+      std.error = std.error * cf,
+      conf.low = estimate - 1.96 * std.error,
+      conf.high = estimate + 1.96 * std.error,
+      FEATUREID = beach_label
+    )
+})
 
 ggplot(coefs, aes(x = day, y = estimate)) +
   geom_point(size = 2) +
   geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.4) +
   geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "gray50") +
   labs(
     title = "Estimated Daily Effect of Pollution Event on Visitation",
-    x = "Days After Pollution Event",
-    y = "Estimated Effect on Visits (vs. Untreated Days)"
+    x = "Event Day (negative = pre-treatment)",
+    y = "Estimated Effect on Visits"
   ) +
+  facet_wrap(~ FEATUREID) +
   theme_minimal()
+
+total_change<- coefs %>%
+  filter(day >= 0, p.value < 0.05) %>%
+  summarise(total_change = sum(estimate)) %>%
+  pull(total_change) %>% 
+  round()
+
+total_change_by_beach <- coefs %>%
+  filter(day >= 0, p.value < 0.05) %>%
+  group_by(FEATUREID) %>%
+  summarise(total_change = round(sum(estimate)))
+
+
+## Pre-trend tests failing, perhaps try a shorter time window (only July) 
