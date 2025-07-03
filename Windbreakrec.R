@@ -438,6 +438,30 @@ movement_summary <- dgs %>%
     .groups = "drop"
   )
 
+ggplot(movement_summary, aes(x = max_dist_m, fill = moved_far)) +
+  geom_histogram(position = "identity", bins = 50) +
+  scale_x_log10() +
+  scale_fill_manual(values = c("TRUE" = "red", "FALSE" = "blue")) +
+  labs(
+    title = "Histogram of maximum intra-day distance (log scale)",
+    x = "Max distance (km, log10)",
+    y = "Count",
+    fill = "> 40km"
+  ) +
+  theme_minimal()
+
+ms_enplanements<-movement_summary %>% 
+  filter(moved_far == TRUE) %>%
+  mutate(month_year = format(date, "%Y-%m")) %>%
+  distinct(date, REGISTRATION_ID, month_year) %>%
+  count(month_year, name = "counts_enplaned")
+
+ms<-dgs %>% # Counts of unique device days in the airport based on total devices, and devices seen >40km from airport after an airport visit on the same day
+  mutate(month_year = format(date, "%Y-%m")) %>%
+  distinct(date, REGISTRATION_ID, month_year) %>%
+  count(month_year, name = "counts_all") %>% 
+  left_join(ms_enplanements, by = "month_year") %>% 
+  mutate(ratio_alldiven = counts_all/counts_enplaned)
 
 pl<-read.csv("Data/Planements.csv")
 
@@ -451,41 +475,26 @@ pl<-read.csv("Data/Planements.csv")
 #   summarise(Enplanements = sum(Enplanements,na.rm = TRUE),Deplanements = sum(Deplanements,na.rm = TRUE)) %>% 
 #   mutate(RatioEnDe = Enplanements/Deplanements) 
 
-plR<-pl %>% # Planements by month
-  group_by(Month) %>% 
-  filter(Total.Route == "R") %>% 
-  summarise(Enplanements = sum(Enplanements,na.rm = TRUE),Deplanements = sum(Deplanements,na.rm = TRUE)) %>% 
-  mutate(RatioEnDe = Enplanements/Deplanements) %>% 
-  { print(., n = nrow(.)) }
+ms<-ms %>% 
+  left_join(pl %>%
+              mutate(month_year = sprintf("%d-%02d", Year, Month)) %>% filter(Total.Route == "T") %>% select(month_year,Enplanements), by = "month_year") %>% 
+  mutate(ratio_enplaned = Enplanements/counts_enplaned,
+         ratio_all = Enplanements/counts_all, 
+         year = as.integer(substr(month_year, 1, 4))) %>% 
+  filter(year != 2025)
 
-pl<-pl %>% 
-  filter(Total.Route == "T") %>%
-  left_join(plR %>% dplyr::select(Month,RatioEnDe), by = "Month") %>% 
-  dplyr::select(!c(Total.Route,Airline,Airline,Plane.Capacity,Source)) %>% 
-  mutate(Deplanements = round(Enplanements/RatioEnDe,0)) %>% 
-  mutate(Planements = Deplanements + Enplanements)
-
-dgs<-dgs %>% 
-  filter(DATE_TYPE == "DAY",SEARCHOBJECTID == "way/100896025") %>% # There's a second small terminal for private charters, filtering out
-  mutate(Year = year(DATE_VALUE), Month = month(DATE_VALUE)) %>% 
-  group_by(Year,Month) %>% 
-  summarise(counts = sum(DEVICE_COUNT))
-  
-pl<-inner_join(pl,dgs, by = c("Year","Month")) %>% # Matching only on common months and years
-  mutate(ratio = Planements/counts)
-
-r2_labels <- pl %>%
-  group_by(Year) %>%
+r2_labels <- ms %>%
+  group_by(year) %>%
   do({
-    model <- lm(Planements ~ counts, data = .)
+    model <- lm(Enplanements ~ counts_enplaned, data = .)
     data.frame(
       r2 = summary(model)$r.squared,
-      x = max(.$Planements, na.rm = TRUE),
-      y = max(.$counts, na.rm = TRUE)
+      x = max(.$Enplanements, na.rm = TRUE),
+      y = max(.$counts_enplaned, na.rm = TRUE)
     )
   })
 
-ggplot(pl, aes(x = Planements, y = counts)) +
+ggplot(ms, aes(x = Enplanements, y = counts_enplaned)) +
   geom_point(alpha = 0.6) +
   geom_smooth(method = "lm", se = FALSE) +
   geom_text(
@@ -494,7 +503,7 @@ ggplot(pl, aes(x = Planements, y = counts)) +
     inherit.aes = FALSE,
     hjust = 1, vjust = 1
   ) +
-  facet_wrap(~ Year) +
+  facet_wrap(~ year) +
   theme_minimal() 
 
 # Visitation model --------------------------------------------------------
