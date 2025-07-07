@@ -88,6 +88,11 @@ rm(files, folder, folder_url, dl)
 df<-st_read("Data/GSNantucketSBeaches.gpkg") # AOI for Nantucket from satellite imagery
 df<-st_simplify(df,dTolerance = 0.00001)
 dg<-st_read("Data/nantucket_terminal_osm_extracted.gpkg") %>% dplyr::filter(name == "Nantucket Terminal 2")
+lcw<-st_read("Data/LCWestport.gpkg") # AOI for Nantucket from satellite imagery
+lcw<-st_simplify(lcw,dTolerance = 0.00001)
+bi<-st_read("Data/BlockIsland.gpkg") # AOI for Nantucket from satellite imagery
+bi<-st_simplify(bi,dTolerance = 0.00001)
+
 ## Want higher res cell data home locations?
 api_key<-read.csv(file = "APIkey.csv", header = FALSE)
 api_key<-api_key$V1
@@ -103,26 +108,45 @@ df<-df %>% # Union of areas for effect status
   summarise(geom = st_union(geom), .groups = "drop") %>%
   st_as_sf()
 df$id<-seq(1,nrow(df),1) # API requires a variable named "id" to pass through the id to the files that are returned, named "searchobjectid" in the file
+dfi<-df %>% # Union of all beach areas on island
+  mutate(geom = st_make_valid(geom)) %>%
+  summarise(geom = st_union(geom), .groups = "drop") %>%
+  st_as_sf()
+bi<-bi %>% # Union of all beach areas
+  mutate(geom = st_make_valid(geom)) %>%
+  summarise(geom = st_union(geom), .groups = "drop") %>%
+  st_as_sf()
+lcw<-lcw %>% # Union of all beach areas
+  mutate(geom = st_make_valid(geom)) %>%
+  summarise(geom = st_union(geom), .groups = "drop") %>%
+  st_as_sf()
+
 df<-st_transform(df, crs = 4326) # Needs to be projected in 4326 to work with lat long conventions of the API
+dfi<-st_transform(dfi, crs = 4326)
 dg<-st_transform(dg, crs = 4326)
+lcw<-st_transform(lcw, crs = 4326)
+bi<-st_transform(bi, crs = 4326)
 
 batchapi<-function(dft,s,e,fname){ # Function converts sf object to json, passes to api, gets returned data, and merges back with sf object
 
   dft$startDateTimeEpochMS<-s # 1704067200000 These work as query variables
   dft$endDateTimeEpochMS<-e # 1706831999000
   dft$excludeFlags<-25216 # Corresponds to guidance for visitation from venntel
-  # dft$startDateTimeEpochMS<-1656633600000
-  # dft$endDateTimeEpochMS<-1659311999999
+  dft$startDateTimeEpochMS<-as.numeric(as.POSIXct("2023-06-15 00:00:00.000", tz = "America/New_York")) * 1000
+  dft$endDateTimeEpochMS<-as.numeric(as.POSIXct("2023-08-15 23:59:59.999", tz = "America/New_York")) * 1000
   #dft<-dft %>% select(-PUD_YR_AVG) # Need more than the geometry column to create a feature collection using sf_geojson. Also, there is a limit of 20 features per request (even if it doesn't return results for 20 features).
   dftj<-sf_geojson(dft,atomise = FALSE) # Convert sf object to GeoJSON
 
   dftj<-fromJSON(dftj) # Doesn't seem to like geojson formatting, switching to json
   dftj<-toJSON(dftj, auto_unbox = TRUE, digits = 15)
-  ae<-all.equal(st_geometry(df), st_geometry(st_read(dftj)), check.attributes = FALSE) # Confirming geometries of st_read(JSON) match original geometries
-  if (isTRUE(ae)) {
+  g1<-st_geometry(dft)
+  g2<-st_geometry(st_read(dftj, quiet = TRUE))
+  suppressWarnings(st_crs(g2) <- st_crs(g1))
+  
+  if (all(lengths(st_equals(g1, g2))>0)) {
     message("Geometry conversion to JSON consistent")
   } else {
-    warning("Geometry conversion to JSON inconsistent", paste(ae, collapse = "; "))
+    warning("Geometry conversion to JSON inconsistent")
   }
 
   # Export query (asynchronous)
@@ -191,9 +215,21 @@ batchapi<-function(dft,s,e,fname){ # Function converts sf object to json, passes
 }
 
 batchapi(df, s = as.numeric(as.POSIXct("2023-06-15 00:00:00.000", tz = "America/New_York")) * 1000,
-         e = as.numeric(as.POSIXct("2023-08-15 23:59:59.999", tz = "America/New_York")) * 1000, fname = "JunAug2023daylight") # Jun - Aug 2023
+         e = as.numeric(as.POSIXct("2023-08-15 23:59:59.999", tz = "America/New_York")) * 1000, fname = "JunAug2023daylight_df") # Jun - Aug 2023
 batchapi(df, s = as.numeric(as.POSIXct("2024-06-15 00:00:00.000", tz = "America/New_York")) * 1000,
-         e = as.numeric(as.POSIXct("2024-08-15 23:59:59.999", tz = "America/New_York")) * 1000, fname = "JunAug2024daylight") # Jun - Aug 2024
+         e = as.numeric(as.POSIXct("2024-08-15 23:59:59.999", tz = "America/New_York")) * 1000, fname = "JunAug2024daylight_df") # Jun - Aug 2024
+batchapi(dfi, s = as.numeric(as.POSIXct("2023-06-15 00:00:00.000", tz = "America/New_York")) * 1000,
+         e = as.numeric(as.POSIXct("2023-08-15 23:59:59.999", tz = "America/New_York")) * 1000, fname = "JunAug2023daylight_dfi") # Jun - Aug 2023
+batchapi(dfi, s = as.numeric(as.POSIXct("2024-06-15 00:00:00.000", tz = "America/New_York")) * 1000,
+         e = as.numeric(as.POSIXct("2024-08-15 23:59:59.999", tz = "America/New_York")) * 1000, fname = "JunAug2024daylight_dfi") # Jun - Aug 2024
+batchapi(lcw, s = as.numeric(as.POSIXct("2023-06-15 00:00:00.000", tz = "America/New_York")) * 1000,
+         e = as.numeric(as.POSIXct("2023-08-15 23:59:59.999", tz = "America/New_York")) * 1000, fname = "JunAug2023daylight_lcw") # Jun - Aug 2023
+batchapi(lcw, s = as.numeric(as.POSIXct("2024-06-15 00:00:00.000", tz = "America/New_York")) * 1000,
+         e = as.numeric(as.POSIXct("2024-08-15 23:59:59.999", tz = "America/New_York")) * 1000, fname = "JunAug2024daylight_lcw") # Jun - Aug 2024
+batchapi(bi, s = as.numeric(as.POSIXct("2023-06-15 00:00:00.000", tz = "America/New_York")) * 1000,
+         e = as.numeric(as.POSIXct("2023-08-15 23:59:59.999", tz = "America/New_York")) * 1000, fname = "JunAug2023daylight_bi") # Jun - Aug 2023
+batchapi(bi, s = as.numeric(as.POSIXct("2024-06-15 00:00:00.000", tz = "America/New_York")) * 1000,
+         e = as.numeric(as.POSIXct("2024-08-15 23:59:59.999", tz = "America/New_York")) * 1000, fname = "JunAug2024daylight_bi") # Jun - Aug 2024
 
 dfs<-map_df(list.files("tData/", pattern = "\\.parquet$", full.names = TRUE), read_parquet)
 
