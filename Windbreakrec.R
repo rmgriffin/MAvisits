@@ -129,11 +129,11 @@ bi<-st_transform(bi, crs = 4326)
 
 batchapi<-function(dft,s,e,fname){ # Function converts sf object to json, passes to api, gets returned data, and merges back with sf object
 
-  dft$startDateTimeEpochMS<-s # 1704067200000 These work as query variables
-  dft$endDateTimeEpochMS<-e # 1706831999000
+  dft$startDateTimeEpochMS<-s # These work as query variables
+  dft$endDateTimeEpochMS<-e
   dft$excludeFlags<-25216 # Corresponds to guidance for visitation from venntel
-  dft$startDateTimeEpochMS<-as.numeric(as.POSIXct("2023-06-15 00:00:00.000", tz = "America/New_York")) * 1000
-  dft$endDateTimeEpochMS<-as.numeric(as.POSIXct("2023-08-15 23:59:59.999", tz = "America/New_York")) * 1000
+  # dft$startDateTimeEpochMS<-as.numeric(as.POSIXct("2023-06-15 00:00:00.000", tz = "America/New_York")) * 1000
+  # dft$endDateTimeEpochMS<-as.numeric(as.POSIXct("2023-08-15 23:59:59.999", tz = "America/New_York")) * 1000
   #dft<-dft %>% select(-PUD_YR_AVG) # Need more than the geometry column to create a feature collection using sf_geojson. Also, there is a limit of 20 features per request (even if it doesn't return results for 20 features).
   dftj<-sf_geojson(dft,atomise = FALSE) # Convert sf object to GeoJSON
 
@@ -236,14 +236,12 @@ dfs <- list.files("tData/", pattern = "\\.parquet$", full.names = TRUE) %>%
     d.f <- read_parquet(f)
     f.name <- basename(f)
     
-    # Extract year and suffix (e.g., "2023", "df")
+    # Extract suffix
     match <- str_match(f.name, "JunAug(\\d{4})daylight_(\\w+)\\.parquet")
-    year <- match[2]
     source <- match[3]
     
     d.f %>%
       mutate(FEATUREID = as.character(FEATUREID),
-             year = year,
              source = source)
   })
 
@@ -257,11 +255,19 @@ batchapi<-function(dft,s,e,fname){ # Function converts sf object to json, passes
   dft$excludeFlags<-25216 # Corresponds to guidance for visitation from venntel
   # dft$startDateTimeEpochMS<-as.numeric(as.POSIXct("2022-08-01 00:00:00.000", tz = "America/New_York")) * 1000
   # dft$endDateTimeEpochMS<-as.numeric(as.POSIXct("2025-05-31 00:00:00.000", tz = "America/New_York")) * 1000
-  #dft<-dft %>% select(-PUD_YR_AVG) # Need more than the geometry column to create a feature collection using sf_geojson. Also, there is a limit of 20 features per request (even if it doesn't return results for 20 features).
   dftj<-sf_geojson(dft,atomise = FALSE) # Convert sf object to GeoJSON
   
   dftj<-fromJSON(dftj) # Doesn't seem to like geojson formatting, switching to json
   dftj<-toJSON(dftj, auto_unbox = TRUE,digits = 15) # Will truncate digits if not specified which causes issues with the API as an invalid polygons
+  g1<-st_geometry(dft)
+  g2<-st_geometry(st_read(dftj, quiet = TRUE))
+  suppressWarnings(st_crs(g2) <- st_crs(g1))
+  
+  if (all(lengths(st_equals(g1, g2))>0)) {
+    message("Geometry conversion to JSON consistent")
+  } else {
+    warning("Geometry conversion to JSON inconsistent")
+  }
   
   # Export query (asynchronous)
   system.time(response<-POST(url, headers, body = dftj, encode = "json", query = list(
@@ -500,7 +506,7 @@ ggplot(movement_summary, aes(x = max_dist_m, fill = moved_far)) +
   ) +
   theme_minimal()
 
-ms_enplanements<-movement_summary %>% 
+ms_enplanements<-movement_summary %>% # Monthly counts of enplaned devices
   filter(moved_far == TRUE) %>%
   mutate(month_year = format(date, "%Y-%m")) %>%
   distinct(date, REGISTRATION_ID, month_year) %>%
@@ -560,13 +566,12 @@ cf<-ms %>% filter(month_year == "2024-07") %>% select(ratio_enplaned) %>% as.num
 
 # Visitation model --------------------------------------------------------
 
-
 #dfs$FEATUREID<-ifelse(dfs$FEATUREID==1,"Martha's Vineyard","Nantucket") # Location labels
 
 dfs$EARLIEST_OBSERVATION_OF_DAY<-with_tz(as.POSIXct(dfs$EARLIEST_OBSERVATION_OF_DAY, format = "%Y-%m-%d %H:%M:%OS", tz = "UTC"), tzone = "America/New_York") # Set format to POSIXct in native UTC time zone, and convert to eastern time
 dfs$LATEST_OBSERVATION_OF_DAY<-with_tz(as.POSIXct(dfs$LATEST_OBSERVATION_OF_DAY, format = "%Y-%m-%d %H:%M:%OS", tz = "UTC"), tzone = "America/New_York")
 
-dfs$year<-year(dfs$DAY_IN_FEATURE)
+dfs$year<-year(dfs$EARLIEST_OBSERVATION_OF_DAY)
 dfs$instant<-ifelse(dfs$EARLIEST_OBSERVATION_OF_DAY == dfs$LATEST_OBSERVATION_OF_DAY,1,0) # Some observations have duration of stay of zero
 table(dfs$year, dfs$instant, dfs$FEATUREID) # How many observations per year, how many appear to be instantaneous, by island?
 dfs<-dfs %>% filter(instant == 0) # Dropping observations with no stay duration
@@ -576,14 +581,35 @@ dfs<-dfs %>% filter(duration_min>5) # 25% of observations are less than 5 minute
 #dfs$vd<-as.numeric(dfs$TOTAL_POPULATION)/as.numeric(dfs$DEVICES_WITH_DECISION_IN_CBG_COUNT) # Population normalized visits
 dfs$vd<-1 # Each device as a visitor day
 
+dfs$source<-ifelse(
+  dfs$source == "bi", "Block Island",
+  ifelse(dfs$source == "lcw","Little Compton and Westport",
+         ifelse(dfs$source %in% c( "df","dfi"),"Nantucket",dfs$source)))
+dfs$FEATUREID<-ifelse(dfs$FEATUREID %in% c("1","2","3"),dfs$FEATUREID,NA)
+
 dfs %>% # Multiple decision locations for devices?
+  filter(is.na(FEATUREID)) %>%
   group_by(DEVICEID) %>% # group_by(DEVICEID,year)
-  summarize(has_variation = n_distinct(CENSUS_BLOCK_GROUP_ID), .groups = "drop") %>% 
-  count(has_variation)
+  summarize(distinct_home_census_blocks = n_distinct(CENSUS_BLOCK_GROUP_ID), .groups = "drop") %>% 
+  count(distinct_home_census_blocks)
+
+dfs<-dfs %>%
+  left_join(
+    dfs %>%
+      filter(is.na(FEATUREID)) %>% 
+      distinct(DEVICEID, source) %>%
+      group_by(DEVICEID) %>%
+      summarise(groups_seen_in = paste(sort(unique(source)), collapse = ", "), .groups = "drop"),
+    by = "DEVICEID"
+  )
+
+dfs %>% filter(is.na(FEATUREID)) %>% count(groups_seen_in) # Summary of overlap in devices across areas
+
 
 # Visitation model --------------------------------------------------------
-df<-dfs %>% # FeatureID {3 - Affected areas, 2 - Unaffected areas, 1 - Maybe affected areas (inland marsh areas adjacent to affected areas)}
-  group_by(DAY_IN_FEATURE,FEATUREID) %>% 
+df<-dfs %>% 
+  filter(is.na(FEATUREID)) %>% # FeatureID {3 - Affected areas, 2 - Unaffected areas, 1 - Maybe affected areas (inland marsh areas adjacent to affected areas)}
+  group_by(DAY_IN_FEATURE,source) %>% 
   summarise(visits = sum(vd,na.rm = TRUE)) %>% 
   mutate(year = as.factor(year(DAY_IN_FEATURE)), dayofmonth = format(as.Date(DAY_IN_FEATURE),"%m-%d")) 
 
@@ -594,7 +620,7 @@ ggplot(df, aes(x = dayofmonth, y = visits, color = year, group = year)) +
   geom_vline(xintercept = "07-16", linetype = "dashed", color = "black") +
   theme_minimal() +
   scale_x_discrete(breaks = unique(df$dayofmonth)[seq(1, length(unique(df$dayofmonth)), by = 14)]) +
-  facet_wrap(~FEATUREID)
+  facet_wrap(~source)
 
 # df$weekendholiday<-ifelse(df$year==2022 & df$dayofmonth %in% c(2,3,4,9,10,16,17,23,24,30,31),1,
 #                           ifelse(df$year==2023 & df$dayofmonth %in% c(1,2,4,8,9,15,16,22,23,29,30),1,
@@ -614,112 +640,61 @@ ggplot(df, aes(x = dayofmonth, y = visits, color = year, group = year)) +
 # wth$rain<-ifelse(wth$raintot>0,1,0) # Rain indicator variable instead of amount, which has addition problems
 # wth$raintot<-NULL
 
-wth<-read.csv("Data/NANTUCKET MEMORIAL AIRPORT, MA US (USW00014756).csv") # Weather data NOAA NCEI
-wth$Date<-as.Date(wth$Date,format = "%m/%d/%Y")
-wth<-wth %>% filter(lubridate::month(Date) %in% c(6,7,8), lubridate::year(Date) %in% c(2022, 2023, 2024)) %>% rename(tempmaxF = TMAX..Degrees.Fahrenheit., precIn = PRCP..Inches.,date = Date) %>% 
-  select(date,precIn,tempmaxF)
+wth<-list.files("Data/", pattern = "AIRPORT.*\\.csv$", full.names = TRUE) %>% # Weather data NOAA NCEI
+  map_dfr(function(f) {
+    read_csv(f, show_col_types = FALSE) %>%
+      mutate(station = str_remove(basename(f), "\\.csv$"))
+  })
 
-df<-df %>% mutate(date = as.Date(DAY_IN_FEATURE)) %>% ungroup() %>% select(!DAY_IN_FEATURE) %>%  # Ungroup is needed because DAY_IN_FEATURE was previously a grouping variable
-  left_join(wth, by = "date")
+wth$Date<-as.Date(wth$Date,format = "%m/%d/%Y")
+wth<-wth %>% filter(lubridate::month(Date) %in% c(6,7,8), lubridate::year(Date) %in% c(2023, 2024)) %>% rename(tempmaxF = `TMAX (Degrees Fahrenheit)`, precIn = `PRCP (Inches)`,date = Date) %>% 
+  select(date,precIn,tempmaxF,station)
+
+# wth %>% # Missing data check
+#   group_by(source) %>%
+#   summarise(across(everything(), ~sum(is.na(.)), .names = "na_{.col}"))
+
+df<-df %>% mutate(date = as.Date(DAY_IN_FEATURE), 
+                   station = case_when(source %in% c("Block Island", "Little Compton and Westport") ~ "NEWPORT STATE AIRPORT, RI US (USW00014787)",
+                                       source == "Nantucket" ~ "NANTUCKET MEMORIAL AIRPORT, MA US (USW00014756)",
+                                       TRUE ~ NA)) %>% 
+  ungroup() %>% # Ungroup is needed because DAY_IN_FEATURE was previously a grouping variable
+  select(!DAY_IN_FEATURE) %>%
+  left_join(wth, by = c("date","station"))
 rm(wth)
 
-df<-df %>% 
-  mutate( # New variables
-    temp_bin = factor(cut(tempmaxF, breaks = c(60, 70, 80, 90, 100))),
-    post = (date >= "2024-07-16"),
-    treated_day = as.integer(post), # Indicator for treated/untreated
-    day_of_week = weekdays(as.Date(date)),
-    treat_dayn1 = as.integer(date == "2024-07-15"), # Short treatment window indicators, pre-trends
-    treat_dayn2 = as.integer(date == "2024-07-14"),
-    treat_dayn3 = as.integer(date == "2024-07-13"),
-    treat_dayn4 = as.integer(date == "2024-07-12"),
-    treat_dayn5 = as.integer(date == "2024-07-11"),
-    treat_dayn6 = as.integer(date == "2024-07-10"),
-    treat_dayn7 = as.integer(date == "2024-07-09"),
-    treat_day0 = as.integer(date == "2024-07-16"), # Short treatment window indicators, post-trends
-    treat_day1 = as.integer(date == "2024-07-17"),
-    treat_day2 = as.integer(date == "2024-07-18"),
-    treat_day3 = as.integer(date == "2024-07-19"),
-    treat_day4 = as.integer(date == "2024-07-20"),
-    treat_day5 = as.integer(date == "2024-07-21"),
-    treat_day6 = as.integer(date == "2024-07-22"),
-    treat_day7 = as.integer(date == "2024-07-23"),
-    treat_day8 = as.integer(date == "2024-07-24"),
-    treat_day9 = as.integer(date == "2024-07-25"),
-    treat_day10 = as.integer(date == "2024-07-26"),
-    treat_day11 = as.integer(date == "2024-07-27"),
-    treat_day12 = as.integer(date == "2024-07-28"),
-    treat_day13 = as.integer(date == "2024-07-29"),
-    treat_day14 = as.integer(date == "2024-07-30"),
-    pollution_mday = "07-16",  # month-day of event
-    pollution_date = as.Date(paste0(year, "-", pollution_mday)),
-    event_day = as.integer(date - pollution_date),
-    affected = ifelse(FEATUREID==3,1,0)) %>% 
-  dplyr::select(-c(pollution_date,pollution_mday,post))
+df<-df %>%
+  filter(format(date, "%m") == "07") %>% # Only July dates to avoid contamination that began in LC and Westport starting 8/1
+  mutate(
+    post = date >= as.Date("2024-07-16"), # TRUE if on or after July 16
+    treated = source == "Nantucket" & year == 2024, # TRUE only for Nantucket in 2024
+    treat_post = post * treated, # DiD interaction term
+    temp_bin = factor(cut(tempmaxF, breaks = c(60, 70, 80, 90, 100), right = TRUE)),
+    day_of_week = weekdays(as.Date(date))
+  )
 
-# summary(model<-lm(visits ~ precIn + temp_bin, data = nt %>% filter(year == 2023)))
-# coeftest(model,vcov = vcovHC,type = "HC1") # Robust standard errors
-
-# model<-feols(visits ~ treated_day + precIn + hot | year + dayofmonth + day_of_week, vcov = "hetero", data = nt %>% filter(year %in% c("2023","2024"))) # cluster = ~ group
-# 
-# model<-feols(visits ~ i(event_day, ref = -1) + precIn | year + day_of_week, vcov = "hetero", data = nt %>% filter(year %in% c("2023","2024"))) # cluster = ~ group
-
-treat_vars <- c( # Treatment variables of interest
-  paste0("treat_dayn", 1:7),
-  paste0("treat_day", 0:14)
+model<- feols(
+  visits ~ treat_post + temp_bin + precIn | source + dayofmonth + day_of_week,
+  data = df,
+  vcov = "hetero"
 )
 
-models <- df %>%
-  filter(FEATUREID != 1) %>%
-  group_split(FEATUREID) %>%
-  set_names(c("North facing", "South facing")) %>%
-  map(~ feols(
-    as.formula(
-      paste("visits ~", paste(c(treat_vars, "precIn", "temp_bin"), collapse = " + "),
-            "| year + dayofmonth + day_of_week")
-    ),
-    data = .x,
-    vcov = "hetero"
-  ))
+summary(model)
 
-pretrend_tests <- map(models, ~ wald(.x, keep = "treat_dayn")) # Run joint test of pre-treatment coefficients for each model
-
-coefs <- imap_dfr(models, function(model, beach_label) {
-  broom::tidy(model) %>%
-    filter(str_detect(term, "^treat_day(n?\\d+)$")) %>%
-    mutate(
-      day = as.integer(str_replace(str_remove(term, "treat_day"), "^n", "-")),
-      estimate = estimate * cf,
-      std.error = std.error * cf,
-      conf.low = estimate - 1.96 * std.error,
-      conf.high = estimate + 1.96 * std.error,
-      FEATUREID = beach_label
-    )
-})
-
-ggplot(coefs, aes(x = day, y = estimate)) +
-  geom_point(size = 2) +
-  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.4) +
-  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
-  geom_vline(xintercept = 0, linetype = "dashed", color = "gray50") +
-  labs(
-    title = "Estimated Daily Effect of Pollution Event on Visitation",
-    x = "Event Day (negative = pre-treatment)",
-    y = "Estimated Effect on Visits"
-  ) +
-  facet_wrap(~ FEATUREID) +
-  theme_minimal()
-
-total_change<- coefs %>%
-  filter(day >= 0, p.value < 0.05) %>%
-  summarise(total_change = sum(estimate)) %>%
-  pull(total_change) %>% 
-  round()
-
-total_change_by_beach <- coefs %>%
-  filter(day >= 0, p.value < 0.05) %>%
-  group_by(FEATUREID) %>%
-  summarise(total_change = round(sum(estimate)))
+total_effect<-as.numeric(coef(model)["treat_post"] * 16 * cf)
 
 
-## Pre-trend tests failing, perhaps try a shorter time window (only July) 
+# Robustness tests --------------------------------------------------------
+pre_df <- df %>%
+  filter(
+    treated == TRUE | source %in% c("Block Island", "Little Compton and Westport"),
+    year == 2023 | (year == 2024 & date < as.Date("2024-07-16"))
+  )
+
+# Plot average daily visits over time
+ggplot(pre_df, aes(x = date, y = visits, color = source, linetype = as.factor(year))) +
+  geom_line() +
+  labs(x = "Date", y = "Visits", color = "Location", linetype = "Year") +
+  theme_minimal() +
+  ggtitle("Parallel Trends Check: Pre-Treatment Visit Trends")
+
