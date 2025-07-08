@@ -214,14 +214,6 @@ batchapi<-function(dft,s,e,fname){ # Function converts sf object to json, passes
   write_parquet(xp, paste0("tData/",fname,".parquet")) # Write to parquet file to save space, versus csv
 }
 
-batchapi(df, s = as.numeric(as.POSIXct("2023-06-15 00:00:00.000", tz = "America/New_York")) * 1000,
-         e = as.numeric(as.POSIXct("2023-08-15 23:59:59.999", tz = "America/New_York")) * 1000, fname = "JunAug2023daylight_df") # Jun - Aug 2023
-batchapi(df, s = as.numeric(as.POSIXct("2024-06-15 00:00:00.000", tz = "America/New_York")) * 1000,
-         e = as.numeric(as.POSIXct("2024-08-15 23:59:59.999", tz = "America/New_York")) * 1000, fname = "JunAug2024daylight_df") # Jun - Aug 2024
-batchapi(dfi, s = as.numeric(as.POSIXct("2023-06-15 00:00:00.000", tz = "America/New_York")) * 1000,
-         e = as.numeric(as.POSIXct("2023-08-15 23:59:59.999", tz = "America/New_York")) * 1000, fname = "JunAug2023daylight_dfi") # Jun - Aug 2023
-batchapi(dfi, s = as.numeric(as.POSIXct("2024-06-15 00:00:00.000", tz = "America/New_York")) * 1000,
-         e = as.numeric(as.POSIXct("2024-08-15 23:59:59.999", tz = "America/New_York")) * 1000, fname = "JunAug2024daylight_dfi") # Jun - Aug 2024
 batchapi(lcw, s = as.numeric(as.POSIXct("2023-06-15 00:00:00.000", tz = "America/New_York")) * 1000,
          e = as.numeric(as.POSIXct("2023-08-15 23:59:59.999", tz = "America/New_York")) * 1000, fname = "JunAug2023daylight_lcw") # Jun - Aug 2023
 batchapi(lcw, s = as.numeric(as.POSIXct("2024-06-15 00:00:00.000", tz = "America/New_York")) * 1000,
@@ -230,8 +222,30 @@ batchapi(bi, s = as.numeric(as.POSIXct("2023-06-15 00:00:00.000", tz = "America/
          e = as.numeric(as.POSIXct("2023-08-15 23:59:59.999", tz = "America/New_York")) * 1000, fname = "JunAug2023daylight_bi") # Jun - Aug 2023
 batchapi(bi, s = as.numeric(as.POSIXct("2024-06-15 00:00:00.000", tz = "America/New_York")) * 1000,
          e = as.numeric(as.POSIXct("2024-08-15 23:59:59.999", tz = "America/New_York")) * 1000, fname = "JunAug2024daylight_bi") # Jun - Aug 2024
+batchapi(df, s = as.numeric(as.POSIXct("2023-06-15 00:00:00.000", tz = "America/New_York")) * 1000,
+         e = as.numeric(as.POSIXct("2023-08-15 23:59:59.999", tz = "America/New_York")) * 1000, fname = "JunAug2023daylight_df") # Jun - Aug 2023
+batchapi(df, s = as.numeric(as.POSIXct("2024-06-15 00:00:00.000", tz = "America/New_York")) * 1000,
+         e = as.numeric(as.POSIXct("2024-08-15 23:59:59.999", tz = "America/New_York")) * 1000, fname = "JunAug2024daylight_df") # Jun - Aug 2024
+batchapi(dfi, s = as.numeric(as.POSIXct("2023-06-15 00:00:00.000", tz = "America/New_York")) * 1000,
+         e = as.numeric(as.POSIXct("2023-08-15 23:59:59.999", tz = "America/New_York")) * 1000, fname = "JunAug2023daylight_dfi") # Jun - Aug 2023
+batchapi(dfi, s = as.numeric(as.POSIXct("2024-06-15 00:00:00.000", tz = "America/New_York")) * 1000,
+         e = as.numeric(as.POSIXct("2024-08-15 23:59:59.999", tz = "America/New_York")) * 1000, fname = "JunAug2024daylight_dfi") # Jun - Aug 2024
 
-dfs<-map_df(list.files("tData/", pattern = "\\.parquet$", full.names = TRUE), read_parquet)
+dfs <- list.files("tData/", pattern = "\\.parquet$", full.names = TRUE) %>%
+  map_dfr(function(f) {
+    d.f <- read_parquet(f)
+    f.name <- basename(f)
+    
+    # Extract year and suffix (e.g., "2023", "df")
+    match <- str_match(f.name, "JunAug(\\d{4})daylight_(\\w+)\\.parquet")
+    year <- match[2]
+    source <- match[3]
+    
+    d.f %>%
+      mutate(FEATUREID = as.character(FEATUREID),
+             year = year,
+             source = source)
+  })
 
 # Calibration model -------------------------------------------------------
 url<-"https://api.gravyanalytics.com/v1.1/observations/geo/search" 
