@@ -666,15 +666,15 @@ rm(wth)
 df<-df %>%
   filter(format(date, "%m") == "07") %>% # Only July dates to avoid contamination that began in LC and Westport starting 8/1
   mutate(
-    post = date >= as.Date("2024-07-16"), # TRUE if on or after July 16
-    treated = source == "Nantucket" & year == 2024, # TRUE only for Nantucket in 2024
+    post = date >= as.Date("2024-07-16") , # TRUE if on or after July 16
+    treated = source == "Nantucket", # TRUE only for Nantucket
     treat_post = post * treated, # DiD interaction term
     temp_bin = factor(cut(tempmaxF, breaks = c(60, 70, 80, 90, 100), right = TRUE)),
     day_of_week = weekdays(as.Date(date))
   )
 
 model<- feols(
-  visits ~ treat_post + temp_bin + precIn | source + dayofmonth + day_of_week,
+  visits ~ treat_post + temp_bin + precIn | source + dayofmonth + day_of_week + year,
   data = df,
   vcov = "hetero"
 )
@@ -686,43 +686,34 @@ total_effect<-as.numeric(coef(model)["treat_post"] * 16 * cf)
 
 # Robustness tests --------------------------------------------------------
 # Pre-trends
-ggplot(df %>% filter(post == FALSE), aes(x = date, y = visits, color = source)) + # Plot
-  geom_line() +
-  facet_wrap(~ year, scales = "free_x") +
-  labs(
-    x = "Date",
-    y = "Visits",
-    color = "Beach",
-    title = "Pre-Treatment Trends by Beach and Year"
-  ) +
-  theme_minimal()
+# ggplot(df %>% filter(post == FALSE), aes(x = date, y = visits, color = source)) + # Plot
+#   geom_line() +
+#   facet_wrap(~ year, scales = "free_x") +
+#   labs(
+#     x = "Date",
+#     y = "Visits",
+#     color = "Beach",
+#     title = "Pre-Treatment trends by location and year"
+#   ) +
+#   theme_minimal()
+
+## Need a residual version of the above
 
 pre_df <- df %>%
-  filter(date < as.Date("2024-07-16")) %>%
-  mutate(
-    time = as.numeric(date - min(date))  # Relative time variable (can be calendar if preferred)
-  )
+  filter(
+    format(date, "%m-%d") >= "07-01" & format(date, "%m-%d") <= "07-15",
+    year %in% c(2023, 2024)
+  ) %>% 
+  mutate(time = as.numeric(date - min(date) + 1))
 
-summary(pretrend_model <- feols( # Equation 18.3 in https://theeffectbook.net/ch-DifferenceinDifference.html
-  visits ~ treated + time + time*treated + temp_bin + precIn | source + dayofmonth + day_of_week,
+pretrend_model <- feols(
+  visits ~ time + treated:time + temp_bin + precIn | day_of_week + dayofmonth + year,
   data = pre_df,
-  vcov = "hetero"
-))
-
-# Placebo test
-placebo_df <- df %>%
-  filter(date <= as.Date("2023-07-31")) %>%
-  mutate(
-    placebo_post = date >= as.Date("2023-07-16"),
-    placebo_treat_post = as.integer(treated & placebo_post)
-  )
-
-# Run placebo DiD
-placebo_model <- feols(
-  visits ~ placebo_treat_post + temp_bin + precIn | source + dayofmonth + day_of_week,
-  data = placebo_df,
   vcov = "hetero"
 )
 
-summary(placebo_model)
+summary(pretrend_model)
+
+# Placebo test
+
 
