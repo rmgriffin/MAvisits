@@ -686,7 +686,25 @@ total_effect<-as.numeric(coef(model)["treat_post"] * 16 * cf)
 
 # Robustness tests --------------------------------------------------------
 # Pre-trends
-# ggplot(df %>% filter(post == FALSE), aes(x = date, y = visits, color = source)) + # Plot
+pre_df <- df %>%
+  filter(
+    (format(date, "%m-%d") >= "07-01" & format(date, "%m-%d") <= "07-15" & year %in% c(2023, 2024)) |
+      (format(date, "%m-%d") >= "07-16" & format(date, "%m-%d") <= "07-31" & year == 2023)
+  ) %>%
+  mutate(
+    time1 = as.numeric(date - min(date) + 1),  # Start counter at 1
+    time2 = as.integer(format(date, "%d"))     # For plotting
+  )
+
+pretrend_model <- feols(
+  visits ~ time1 + treated:time1 + temp_bin + precIn | day_of_week + dayofmonth + year,
+  data = pre_df,
+  vcov = "hetero"
+)
+
+summary(pretrend_model)
+
+# ggplot(df %>% filter(post == FALSE), aes(x = date, y = visits, color = source)) + # Plot of raw visits
 #   geom_line() +
 #   facet_wrap(~ year, scales = "free_x") +
 #   labs(
@@ -697,23 +715,16 @@ total_effect<-as.numeric(coef(model)["treat_post"] * 16 * cf)
 #   ) +
 #   theme_minimal()
 
-## Need a residual version of the above
+pre_df$fitted <- predict(pretrend_model)
 
-pre_df <- df %>%
-  filter(
-    format(date, "%m-%d") >= "07-01" & format(date, "%m-%d") <= "07-15",
-    year %in% c(2023, 2024)
-  ) %>% 
-  mutate(time = as.numeric(date - min(date) + 1))
-
-pretrend_model <- feols(
-  visits ~ time + treated:time + temp_bin + precIn | day_of_week + dayofmonth + year,
-  data = pre_df,
-  vcov = "hetero"
-)
-
-summary(pretrend_model)
+ggplot(pre_df %>% filter(source != "Block Island"), aes(x = time2, y = fitted, color = treated)) +
+  geom_line(size = 1.2) +
+  facet_wrap(~ year, scales = "free_x") +
+  labs(x = "Time", y = "Covariate-adjusted visits", color = "Treated") +
+  theme_minimal()
 
 # Placebo test
+
+
 
 
