@@ -685,16 +685,44 @@ total_effect<-as.numeric(coef(model)["treat_post"] * 16 * cf)
 
 
 # Robustness tests --------------------------------------------------------
+# Pre-trends
+ggplot(df %>% filter(post == FALSE), aes(x = date, y = visits, color = source)) + # Plot
+  geom_line() +
+  facet_wrap(~ year, scales = "free_x") +
+  labs(
+    x = "Date",
+    y = "Visits",
+    color = "Beach",
+    title = "Pre-Treatment Trends by Beach and Year"
+  ) +
+  theme_minimal()
+
 pre_df <- df %>%
-  filter(
-    treated == TRUE | source %in% c("Block Island", "Little Compton and Westport"),
-    year == 2023 | (year == 2024 & date < as.Date("2024-07-16"))
+  filter(date < as.Date("2024-07-16")) %>%
+  mutate(
+    time = as.numeric(date - min(date))  # Relative time variable (can be calendar if preferred)
   )
 
-# Plot average daily visits over time
-ggplot(pre_df, aes(x = date, y = visits, color = source, linetype = as.factor(year))) +
-  geom_line() +
-  labs(x = "Date", y = "Visits", color = "Location", linetype = "Year") +
-  theme_minimal() +
-  ggtitle("Parallel Trends Check: Pre-Treatment Visit Trends")
+summary(pretrend_model <- feols( # Equation 18.3 in https://theeffectbook.net/ch-DifferenceinDifference.html
+  visits ~ treated + time + time*treated + temp_bin + precIn | source + dayofmonth + day_of_week,
+  data = pre_df,
+  vcov = "hetero"
+))
+
+# Placebo test
+placebo_df <- df %>%
+  filter(date <= as.Date("2023-07-31")) %>%
+  mutate(
+    placebo_post = date >= as.Date("2023-07-16"),
+    placebo_treat_post = as.integer(treated & placebo_post)
+  )
+
+# Run placebo DiD
+placebo_model <- feols(
+  visits ~ placebo_treat_post + temp_bin + precIn | source + dayofmonth + day_of_week,
+  data = placebo_df,
+  vcov = "hetero"
+)
+
+summary(placebo_model)
 
