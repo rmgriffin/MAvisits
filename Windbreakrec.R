@@ -119,6 +119,8 @@ ggplot(ms, aes(x = Enplanements, y = counts_enplaned)) +
 
 cf<-ms %>% filter(month_year == "2024-07") %>% select(ratio_enplaned) %>% as.numeric() # Conversion factor for July 2024
 
+rm(r2_labels)
+
 # Visitation model data preparation --------------------------------------------------------
 
 data_cleaning<-function(t){
@@ -248,7 +250,7 @@ df<-df %>% mutate(date = as.Date(DAY_IN_FEATURE),
   ungroup() %>% # Ungroup is needed because DAY_IN_FEATURE was previously a grouping variable
   select(!DAY_IN_FEATURE) %>%
   left_join(wth, by = c("date","station"))
-rm(wth)
+rm(wth,full_grid,ntsn,mvu,ntu,valid_dates,meta)
 
 
 # Visitation model --------------------------------------------------------
