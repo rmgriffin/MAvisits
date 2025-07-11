@@ -556,4 +556,4 @@ polapi<-function(ids,s,e,fpath,fname_prefix = "batch_"){
 
 dds<-map_df(list.files("tData/", pattern = "^batch_.*\\.parquet$", full.names = TRUE), read_parquet)
 
-rm(ids,api_key,url,riwmv,ntu,ntsn,mvu,dg)
+rm(ids,api_key,url,riwmv,ntu,ntsn,mvu,dg,geosearchapi,polapi,tradeapi)
