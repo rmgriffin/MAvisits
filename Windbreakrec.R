@@ -122,34 +122,23 @@ cf<-ms %>% filter(month_year == "2024-07") %>% select(ratio_enplaned) %>% as.num
 rm(r2_labels)
 
 # Visitation model data preparation --------------------------------------------------------
+dfs$EARLIEST_OBSERVATION_OF_DAY<-with_tz(as.POSIXct(dfs$EARLIEST_OBSERVATION_OF_DAY, format = "%Y-%m-%d %H:%M:%OS", tz = "UTC"), tzone = "America/New_York") # Set format to POSIXct in native UTC time zone, and convert to eastern time
+dfs$LATEST_OBSERVATION_OF_DAY<-with_tz(as.POSIXct(dfs$LATEST_OBSERVATION_OF_DAY, format = "%Y-%m-%d %H:%M:%OS", tz = "UTC"), tzone = "America/New_York")
 
-data_cleaning<-function(t){
+dfs$year<-year(dfs$EARLIEST_OBSERVATION_OF_DAY)
+dfs$instant<-ifelse(dfs$EARLIEST_OBSERVATION_OF_DAY == dfs$LATEST_OBSERVATION_OF_DAY,1,0) # Some observations have duration of stay of zero
+table(dfs$year, dfs$instant, dfs$id) # How many observations per year, how many appear to be instantaneous, by island?
+dfs<-dfs %>% filter(instant == 0) # Dropping observations with no stay duration
 
-  t$EARLIEST_OBSERVATION_OF_DAY<-with_tz(as.POSIXct(t$EARLIEST_OBSERVATION_OF_DAY, format = "%Y-%m-%d %H:%M:%OS", tz = "UTC"), tzone = "America/New_York") # Set format to POSIXct in native UTC time zone, and convert to eastern time
-  t$LATEST_OBSERVATION_OF_DAY<-with_tz(as.POSIXct(t$LATEST_OBSERVATION_OF_DAY, format = "%Y-%m-%d %H:%M:%OS", tz = "UTC"), tzone = "America/New_York")
-  
-  t$year<-year(t$EARLIEST_OBSERVATION_OF_DAY)
-  t$instant<-ifelse(t$EARLIEST_OBSERVATION_OF_DAY == t$LATEST_OBSERVATION_OF_DAY,1,0) # Some observations have duration of stay of zero
-  table(t$year, t$instant, t$id) # How many observations per year, how many appear to be instantaneous, by island?
-  t<-t %>% filter(instant == 0) # Dropping observations with no stay duration
-  
-  t$duration_min<-as.numeric(difftime(t$LATEST_OBSERVATION_OF_DAY,t$EARLIEST_OBSERVATION_OF_DAY,units = "secs"))/60
-  t<-t %>% filter(duration_min>5) # 25% of observations are less than 5 minutes observed in the area, dropping those
-  #t$vd<-as.numeric(t$TOTAL_POPULATION)/as.numeric(t$DEVICES_WITH_DECISION_IN_CBG_COUNT) # Population normalized visits
-  t$vd<-1 # Each device as a visitor day
-  
-  # t %>% # Multiple decision locations for devices?
-  #   group_by(DEVICEID) %>% # group_by(DEVICEID,year)
-  #   summarize(distinct_home_census_blocks = n_distinct(CENSUS_BLOCK_GROUP_ID), .groups = "drop") %>% 
-  #   count(distinct_home_census_blocks)
-  
-  return(t)
-  }
+dfs$duration_min<-as.numeric(difftime(dfs$LATEST_OBSERVATION_OF_DAY,dfs$EARLIEST_OBSERVATION_OF_DAY,units = "secs"))/60
+dfs<-dfs %>% filter(duration_min>5) # 25% of observations are less than 5 minutes observed in the area, dropping those
+#dfs$vd<-as.numeric(dfs$TOTAL_POPULATION)/as.numeric(dfs$DEVICES_WITH_DECISION_IN_CBG_COUNT) # Population normalized visits
+dfs$vd<-1 # Each device as a visitor day
 
-dfs<-data_cleaning(dfs)
-dfmvu<-dfmvu %>% rename(id = FEATUREID) %>% data_cleaning()
-dfntu<-dfntu %>% rename(id = FEATUREID) %>% data_cleaning()
-dfntsn<-dfntsn %>% rename(id = FEATUREID) %>% data_cleaning()
+# dfs %>% # Multiple decision locations for devices?
+#   group_by(DEVICEID) %>% # group_by(DEVICEID,year)
+#   summarize(distinct_home_census_blocks = n_distinct(CENSUS_BLOCK_GROUP_ID), .groups = "drop") %>%
+#   count(distinct_home_census_blocks)
 
 df<-dfs %>% 
   group_by(DAY_IN_FEATURE,id,Name,City,State) %>% 
@@ -180,39 +169,7 @@ df <- full_grid %>%
          DAY_IN_FEATURE = as.character(DAY_IN_FEATURE),
          year = as.factor(year(DAY_IN_FEATURE)))
 
-ntu<-dfntu %>% 
-  group_by(DAY_IN_FEATURE,id) %>% 
-  summarise(visits = sum(vd,na.rm = TRUE)) %>% 
-  mutate(year = as.factor(year(DAY_IN_FEATURE)), 
-         dayofmonth = format(as.Date(DAY_IN_FEATURE),"%m-%d"),
-         Name = "Nantucket all beaches",
-         City = "Nantucket",
-         State = "MA",
-         id = 184)
-
-mvu<-dfmvu %>% 
-  group_by(DAY_IN_FEATURE,id) %>% 
-  summarise(visits = sum(vd,na.rm = TRUE)) %>% 
-  mutate(year = as.factor(year(DAY_IN_FEATURE)), 
-         dayofmonth = format(as.Date(DAY_IN_FEATURE),"%m-%d"),
-         Name = "Martha's Vineyard all beaches",
-         City = "Martha's Vineyard",
-         State = "MA",
-         id = 185)
-
-ntsn<-dfntsn %>% # ids {1 - North side of island, 2 - South side}
-  group_by(DAY_IN_FEATURE,id) %>% 
-  summarise(visits = sum(vd,na.rm = TRUE)) %>% 
-  mutate(year = as.factor(year(DAY_IN_FEATURE)), 
-         dayofmonth = format(as.Date(DAY_IN_FEATURE),"%m-%d"),
-         Name = case_when(id == 2 ~ "Nantucket southern beaches", id == 1 ~ "Nantucket northern beaches", TRUE ~ NA),
-         City = "Nantucket",
-         State = "MA",
-         id = case_when(Name == "Nantucket southern beaches" ~ 186, Name == "Nantucket northern beaches" ~ 187, TRUE ~ NA))
-
-df<-bind_rows(df,ntu,mvu,ntsn)
-
-# ggplot(df %>% filter(id %in% 1:183), aes(x = dayofmonth, y = visits, color = year, group = year)) +
+# ggplot(df, aes(x = dayofmonth, y = visits, color = year, group = year)) + # Cell visits by day and year for each id
 #   geom_line() +
 #   labs(x = "Day", y = "Visits", color = "Year") +
 #   theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)) +
@@ -221,12 +178,38 @@ df<-bind_rows(df,ntu,mvu,ntsn)
 #   scale_x_discrete(breaks = unique(df$dayofmonth)[seq(1, length(unique(df$dayofmonth)), by = 14)]) +
 #   facet_wrap(~id)
 
-# df %>%
-#   filter(id %in% 1:183) %>% 
-#   group_by(Name,State,year) %>%
-#   summarise(sumvisits = sum(visits)) %>%
-#   arrange(desc(sumvisits)) %>%
-#   print(n = nrow(.))
+df %>% # Total cell visits by beach id
+  #filter(City == "Nantucket") %>%
+  filter(year == 2023) %>% 
+  group_by(Name,State,City,year) %>%
+  summarise(sumvisits = sum(visits)) %>%
+  arrange(desc(sumvisits)) %>%
+  print(n = nrow(.))
+
+low_visit_ids<-df %>%
+  filter(year == 2023) %>%
+  group_by(id) %>%
+  summarise(sumvisits_2023 = sum(visits)) %>%
+  filter(sumvisits_2023 < 62) %>%
+  pull(id)
+
+totvisitsN2024<-df %>% # Total cell visits in Nantucket in 2024
+  filter(City == "Nantucket") %>%
+  filter(year == 2024) %>% 
+  summarise(sumvisits = sum(visits)) %>% 
+  as.numeric()
+
+`%ni%`<- Negate(`%in%`)
+df<-df %>% 
+  filter(id %ni% low_visit_ids)
+
+FtotvisitsN2024<-df %>% # Filtered total cell visits in Nantucket in 2024
+  filter(City == "Nantucket") %>%
+  filter(year == 2024) %>% 
+  summarise(sumvisits = sum(visits)) %>% 
+  as.numeric()
+
+cvf<-totvisitsN2024/FtotvisitsN2024 # Conversion factor to get from filtered visits for visitation model to total visits for impact assessment
 
 wth<-list.files("Data/", pattern = "AIRPORT.*\\.csv$", full.names = TRUE) %>% # Weather data NOAA NCEI
   map_dfr(function(f) {
@@ -250,14 +233,10 @@ df<-df %>% mutate(date = as.Date(DAY_IN_FEATURE),
   ungroup() %>% # Ungroup is needed because DAY_IN_FEATURE was previously a grouping variable
   select(!DAY_IN_FEATURE) %>%
   left_join(wth, by = c("date","station"))
-rm(wth,full_grid,ntsn,mvu,ntu,valid_dates,meta)
+rm(wth,full_grid,valid_dates,meta)
 
 
 # Visitation model --------------------------------------------------------
-
-### Start here
-
-
 df<-df %>%
   filter(format(date, "%m") == "07") %>% # Only July dates to avoid contamination that began in LC and Westport starting 8/1
   mutate(
@@ -270,7 +249,7 @@ df<-df %>%
 
 df <- df %>%
   mutate(
-    source = factor(source),
+    id = factor(id),
     dayofmonth = factor(dayofmonth),
     day_of_week = factor(day_of_week)
   )
