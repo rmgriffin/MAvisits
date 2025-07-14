@@ -184,49 +184,49 @@ tradeapi<-function(dft,s,e,fpath,fname_prefix = "batch_"){ # Function converts s
   write_parquet(xp, paste0(fpath,fname,".parquet")) # Write to parquet file to save space, versus csv
 }
 
-split_al<-split(al, ceiling(seq_len(nrow(al))/20)) # api returns 404 error if even one polygon in the batch has a problem
-
-plan(sequential)
-plan(multisession, workers = 2) # Initializing parallel processing, API can only handle two concurrent connections
-set.seed(12)
-
-system.time(future_imap(
-  split_al,
-  function(data, index) {
-    cat("Processing index:", index, "\n")
-    tradeapi(
-      data,
-      s = as.numeric(as.POSIXct("2023-06-15 00:00:00.000", tz = "America/New_York")) * 1000,
-      e = as.numeric(as.POSIXct("2023-08-15 23:59:59.999", tz = "America/New_York")) * 1000,
-      fpath = "tData/", # Filepath of output
-      fname_prefix = 2023
-    )
-  },
-  .options = furrr_options(
-    packages = c("R.utils", "httr", "tidyverse", "jsonlite", "sf", "geojsonsf", "lwgeom", "furrr", "arrow"),
-    seed = TRUE
-  ),
-  .progress = TRUE
-))
-
-system.time(future_imap(
-  split_al,
-  function(data, index) {
-    cat("Processing index:", index, "\n")
-    tradeapi(
-      data,
-      s = as.numeric(as.POSIXct("2024-06-15 00:00:00.000", tz = "America/New_York")) * 1000,
-      e = as.numeric(as.POSIXct("2024-08-15 23:59:59.999", tz = "America/New_York")) * 1000,
-      fpath = "tData/", # Filepath of output
-      fname_prefix = 2024
-    )
-  },
-  .options = furrr_options(
-    packages = c("R.utils", "httr", "tidyverse", "jsonlite", "sf", "geojsonsf", "lwgeom", "furrr", "arrow"),
-    seed = TRUE
-  ),
-  .progress = TRUE
-))
+# split_al<-split(al, ceiling(seq_len(nrow(al))/20)) # api returns 404 error if even one polygon in the batch has a problem
+# 
+# plan(sequential)
+# plan(multisession, workers = 2) # Initializing parallel processing, API can only handle two concurrent connections
+# set.seed(12)
+# 
+# system.time(future_imap(
+#   split_al,
+#   function(data, index) {
+#     cat("Processing index:", index, "\n")
+#     tradeapi(
+#       data,
+#       s = as.numeric(as.POSIXct("2023-06-15 00:00:00.000", tz = "America/New_York")) * 1000,
+#       e = as.numeric(as.POSIXct("2023-08-15 23:59:59.999", tz = "America/New_York")) * 1000,
+#       fpath = "tData/", # Filepath of output
+#       fname_prefix = 2023
+#     )
+#   },
+#   .options = furrr_options(
+#     packages = c("R.utils", "httr", "tidyverse", "jsonlite", "sf", "geojsonsf", "lwgeom", "furrr", "arrow"),
+#     seed = TRUE
+#   ),
+#   .progress = TRUE
+# ))
+# 
+# system.time(future_imap(
+#   split_al,
+#   function(data, index) {
+#     cat("Processing index:", index, "\n")
+#     tradeapi(
+#       data,
+#       s = as.numeric(as.POSIXct("2024-06-15 00:00:00.000", tz = "America/New_York")) * 1000,
+#       e = as.numeric(as.POSIXct("2024-08-15 23:59:59.999", tz = "America/New_York")) * 1000,
+#       fpath = "tData/", # Filepath of output
+#       fname_prefix = 2024
+#     )
+#   },
+#   .options = furrr_options(
+#     packages = c("R.utils", "httr", "tidyverse", "jsonlite", "sf", "geojsonsf", "lwgeom", "furrr", "arrow"),
+#     seed = TRUE
+#   ),
+#   .progress = TRUE
+# ))
 
 dfs <- list.files("tData/", pattern = "^(2023data|2024data).*\\.parquet$", full.names = TRUE) %>% 
   map_dfr(function(f) {
