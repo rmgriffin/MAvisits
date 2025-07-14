@@ -33,7 +33,7 @@ options(scipen = 999) # Prevent scientific notation
 
 
 # Load data into workspace ---------------------------------------------------
-nt<-st_transform(st_read("Data/GSNantucketSBeaches.gpkg"), crs = 4326) # AOI for Nantucket from satellite imagery, projected in 4326 to work with conventions of the API
+nt<-st_transform(st_read("Data/GSNantucketSBeaches.gpkg"), crs = 4326) %>% select(!Affected) # AOI for Nantucket from satellite imagery, projected in 4326 to work with conventions of the API
 dg<-st_transform(st_read("Data/nantucket_terminal_osm_extracted.gpkg"), crs = 4326) %>% dplyr::filter(name == "Nantucket Terminal 2")
 lcw<-st_transform(st_read("Data/LCWestport.gpkg"), crs = 4326) # AOI for Little Compton and Westport from satellite imagery
 bi<-st_transform(st_read("Data/BlockIsland.gpkg"), crs = 4326) # AOI for Block Island from satellite imagery
@@ -41,33 +41,10 @@ ai<-st_transform(st_read("Data/AquidneckIsland.gpkg"), crs = 4326) # AOI for Aqu
 jw<-st_transform(st_read("Data/JamestownWesternRI.gpkg"), crs = 4326) # AOI for Jamestown and Western Rhode Island from satellite imagery
 mv<-st_transform(st_read("Data/MV.gpkg") %>% dplyr::select(Name, City, State, geom), crs = 4326) # AOI for Martha's Vineyard from satellite imagery
 
-riwmv<-rbind(lcw,bi,ai,jw,mv)
-riwmv<-st_simplify(riwmv,dTolerance = 0.00001)
-riwmv$id<-seq(1,nrow(riwmv),1) # API requires a variable named "id" to pass through the id to the files that are returned, named "searchobjectid" in the file, also need more than one column
+al<-bind_rows(lcw,bi,ai,jw,mv,nt)
+al$id<-seq(1,nrow(al),1) # API requires a variable named "id" to pass through the id to the files that are returned, named "searchobjectid" in the file, also need more than one column
 
-mvu<-mv %>% # Union of all beach areas on island
-  #mutate(geom = st_make_valid(geom)) %>%
-  summarise(geom = st_union(geom), .groups = "drop") %>%
-  st_as_sf()
-mvu<-st_simplify(mvu,dTolerance = 0.00001)
-mvu$id<-seq(1,nrow(mvu),1)
-
-ntsn<-nt %>% # Union of areas on south and north shores Nantucket
-  filter(Affected != "Maybe") %>% 
-  mutate(geom = st_make_valid(geom)) %>%
-  group_by(Affected) %>%
-  summarise(geom = st_union(geom), .groups = "drop") %>%
-  st_as_sf()
-ntsn<-st_simplify(ntsn,dTolerance = 0.00001)
-ntsn$id<-seq(1,nrow(ntsn),1) # API requires a variable named "id" to pass through the id to the files that are returned, named "searchobjectid" in the file
-
-ntu<-nt %>% # Union of all beaches on Nantucket
-  filter(Affected != "Maybe") %>% 
-  mutate(geom = st_make_valid(geom)) %>%
-  summarise(geom = st_union(geom), .groups = "drop") %>%
-  st_as_sf()
-ntu<-st_simplify(ntu,dTolerance = 0.00001)
-ntu$id<-seq(1,nrow(ntu),1) # API requires a variable named "id" to pass through the id to the files that are returned, named "searchobjectid" in the file, also need more than one column
+al<-st_simplify(st_make_valid(al),dTolerance = 0.00001)
 
 dg$id<-seq(1,nrow(dg),1)
 
@@ -207,62 +184,49 @@ tradeapi<-function(dft,s,e,fpath,fname_prefix = "batch_"){ # Function converts s
   write_parquet(xp, paste0(fpath,fname,".parquet")) # Write to parquet file to save space, versus csv
 }
 
-# tradeapi(ntsn, s = as.numeric(as.POSIXct("2023-06-15 00:00:00.000", tz = "America/New_York")) * 1000,
-#          e = as.numeric(as.POSIXct("2023-08-15 23:59:59.999", tz = "America/New_York")) * 1000, fpath = "tData/", fname_prefix = 2023) # Daylight hours Jun - Aug 2023
-# tradeapi(ntsn, s = as.numeric(as.POSIXct("2024-06-15 00:00:00.000", tz = "America/New_York")) * 1000,
-#          e = as.numeric(as.POSIXct("2024-08-15 23:59:59.999", tz = "America/New_York")) * 1000, fpath = "tData/", fname_prefix = 2024) # Daylight hours Jun - Aug 2024
-# tradeapi(ntu, s = as.numeric(as.POSIXct("2023-06-15 00:00:00.000", tz = "America/New_York")) * 1000,
-#          e = as.numeric(as.POSIXct("2023-08-15 23:59:59.999", tz = "America/New_York")) * 1000, fpath = "tData/", fname_prefix = 2023) # Daylight hours Jun - Aug 2023
-# tradeapi(ntu, s = as.numeric(as.POSIXct("2024-06-15 00:00:00.000", tz = "America/New_York")) * 1000,
-#          e = as.numeric(as.POSIXct("2024-08-15 23:59:59.999", tz = "America/New_York")) * 1000, fpath = "tData/", fname_prefix = 2024) # Daylight hours Jun - Aug 2024
-# tradeapi(mvu, s = as.numeric(as.POSIXct("2023-06-15 00:00:00.000", tz = "America/New_York")) * 1000,
-#          e = as.numeric(as.POSIXct("2023-08-15 23:59:59.999", tz = "America/New_York")) * 1000, fpath = "tData/", fname_prefix = 2023) # Daylight hours Jun - Aug 2023
-# tradeapi(mvu, s = as.numeric(as.POSIXct("2024-06-15 00:00:00.000", tz = "America/New_York")) * 1000,
-#          e = as.numeric(as.POSIXct("2024-08-15 23:59:59.999", tz = "America/New_York")) * 1000, fpath = "tData/", fname_prefix = 2024) # Daylight hours Jun - Aug 2024
-# 
-# split_riwmv<-split(riwmv, ceiling(seq_len(nrow(riwmv))/20)) # api returns 404 error if even one polygon in the batch has a problem
-# 
-# plan(sequential)
-# plan(multisession, workers = 2) # Initializing parallel processing, API can only handle two concurrent connections
-# set.seed(12)
-# 
-# system.time(future_imap(
-#   split_riwmv,
-#   function(data, index) {
-#     cat("Processing index:", index, "\n")
-#     tradeapi(
-#       data,
-#       s = as.numeric(as.POSIXct("2023-06-15 00:00:00.000", tz = "America/New_York")) * 1000,
-#       e = as.numeric(as.POSIXct("2023-08-15 23:59:59.999", tz = "America/New_York")) * 1000,
-#       fpath = "tData/", # Filepath of output
-#       fname_prefix = 2023
-#     )
-#   },
-#   .options = furrr_options(
-#     packages = c("R.utils", "httr", "tidyverse", "jsonlite", "sf", "geojsonsf", "lwgeom", "furrr", "arrow"),
-#     seed = TRUE
-#   ),
-#   .progress = TRUE
-# ))
-# 
-# system.time(future_imap(
-#   split_riwmv,
-#   function(data, index) {
-#     cat("Processing index:", index, "\n")
-#     tradeapi(
-#       data,
-#       s = as.numeric(as.POSIXct("2024-06-15 00:00:00.000", tz = "America/New_York")) * 1000,
-#       e = as.numeric(as.POSIXct("2024-08-15 23:59:59.999", tz = "America/New_York")) * 1000,
-#       fpath = "tData/", # Filepath of output
-#       fname_prefix = 2024  
-#     )
-#   },
-#   .options = furrr_options(
-#     packages = c("R.utils", "httr", "tidyverse", "jsonlite", "sf", "geojsonsf", "lwgeom", "furrr", "arrow"),
-#     seed = TRUE
-#   ),
-#   .progress = TRUE
-# ))
+split_al<-split(al, ceiling(seq_len(nrow(al))/20)) # api returns 404 error if even one polygon in the batch has a problem
+
+plan(sequential)
+plan(multisession, workers = 2) # Initializing parallel processing, API can only handle two concurrent connections
+set.seed(12)
+
+system.time(future_imap(
+  split_al,
+  function(data, index) {
+    cat("Processing index:", index, "\n")
+    tradeapi(
+      data,
+      s = as.numeric(as.POSIXct("2023-06-15 00:00:00.000", tz = "America/New_York")) * 1000,
+      e = as.numeric(as.POSIXct("2023-08-15 23:59:59.999", tz = "America/New_York")) * 1000,
+      fpath = "tData/", # Filepath of output
+      fname_prefix = 2023
+    )
+  },
+  .options = furrr_options(
+    packages = c("R.utils", "httr", "tidyverse", "jsonlite", "sf", "geojsonsf", "lwgeom", "furrr", "arrow"),
+    seed = TRUE
+  ),
+  .progress = TRUE
+))
+
+system.time(future_imap(
+  split_al,
+  function(data, index) {
+    cat("Processing index:", index, "\n")
+    tradeapi(
+      data,
+      s = as.numeric(as.POSIXct("2024-06-15 00:00:00.000", tz = "America/New_York")) * 1000,
+      e = as.numeric(as.POSIXct("2024-08-15 23:59:59.999", tz = "America/New_York")) * 1000,
+      fpath = "tData/", # Filepath of output
+      fname_prefix = 2024
+    )
+  },
+  .options = furrr_options(
+    packages = c("R.utils", "httr", "tidyverse", "jsonlite", "sf", "geojsonsf", "lwgeom", "furrr", "arrow"),
+    seed = TRUE
+  ),
+  .progress = TRUE
+))
 
 dfs <- list.files("tData/", pattern = "^(2023data|2024data).*\\.parquet$", full.names = TRUE) %>% 
   map_dfr(function(f) {
@@ -271,66 +235,19 @@ dfs <- list.files("tData/", pattern = "^(2023data|2024data).*\\.parquet$", full.
     
     # Extract prefix without year
     match <- str_match(f.name, "^.{4}([^_]+)_")
-    source <- match[2]
     
     d.f %>%
       mutate(FEATUREID = as.character(FEATUREID),
-             CENSUS_BLOCK_GROUP_ID = as.character(CENSUS_BLOCK_GROUP_ID),
-             source = source)
+             CENSUS_BLOCK_GROUP_ID = as.character(CENSUS_BLOCK_GROUP_ID))
   })
 
-dfs$source<-ifelse(dfs$source == "data","riwmv",dfs$source)
 dfs$FEATUREID<-as.numeric(dfs$FEATUREID)
 dfs<-dfs %>% rename(id = FEATUREID)
 
 dfs<-dfs %>%
-  left_join(riwmv, by = "id") %>% 
+  left_join(al, by = "id") %>% 
   mutate()
 
-dfntu <- list.files("tData/", pattern = "^(2023ntu|2024ntu).*\\.parquet$", full.names = TRUE) %>% 
-  map_dfr(function(f) {
-    d.f <- read_parquet(f)
-    f.name <- basename(f)
-    
-    # Extract prefix without year
-    match <- str_match(f.name, "^.{4}([^_]+)_")
-    source <- match[2]
-    
-    d.f %>%
-      mutate(FEATUREID = as.character(FEATUREID),
-             CENSUS_BLOCK_GROUP_ID = as.character(CENSUS_BLOCK_GROUP_ID),
-             source = source)
-  })
-
-dfmvu <- list.files("tData/", pattern = "^(2023mvu|2024mvu).*\\.parquet$", full.names = TRUE) %>% 
-  map_dfr(function(f) {
-    d.f <- read_parquet(f)
-    f.name <- basename(f)
-    
-    # Extract prefix without year
-    match <- str_match(f.name, "^.{4}([^_]+)_")
-    source <- match[2]
-    
-    d.f %>%
-      mutate(FEATUREID = as.character(FEATUREID),
-             CENSUS_BLOCK_GROUP_ID = as.character(CENSUS_BLOCK_GROUP_ID),
-             source = source)
-  })
-
-dfntsn <- list.files("tData/", pattern = "^(2023ntsn|2024ntsn).*\\.parquet$", full.names = TRUE) %>% 
-  map_dfr(function(f) {
-    d.f <- read_parquet(f)
-    f.name <- basename(f)
-    
-    # Extract prefix without year
-    match <- str_match(f.name, "^.{4}([^_]+)_")
-    source <- match[2]
-    
-    d.f %>%
-      mutate(FEATUREID = as.character(FEATUREID),
-             CENSUS_BLOCK_GROUP_ID = as.character(CENSUS_BLOCK_GROUP_ID),
-             source = source)
-  })
 
 # Calibration model api queries -------------------------------------------------------
 # Identifying device ids within AOI of Nantucket Airport terminal
