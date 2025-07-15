@@ -4,7 +4,7 @@ rm(list=ls()) # Clears workspace
 # install.packages("renv") # Install/call libraries
 # renv::init()
 
-PKG<-c("googledrive","sf","tidyverse","httpuv","R.utils","httr","jsonlite","geojsonsf","lwgeom","furrr","arrow","stringr","sandwich","lmtest","fixest","digest","geosphere")
+PKG<-c("googledrive","sf","tidyverse","httpuv","R.utils","httr","jsonlite","geojsonsf","lwgeom","furrr","arrow","stringr","sandwich","lmtest","fixest","digest","geosphere","broom","fwildclusterboot")
 
 for (p in PKG) {
   if(!require(p,character.only = TRUE)) {  
@@ -178,6 +178,8 @@ df <- full_grid %>%
 #   scale_x_discrete(breaks = unique(df$dayofmonth)[seq(1, length(unique(df$dayofmonth)), by = 14)]) +
 #   facet_wrap(~id)
 
+nv<-62 # Threshold under which to exclude beaches
+
 df %>% # Total cell visits by beach id
   #filter(City == "Nantucket") %>%
   filter(year == 2023) %>% 
@@ -190,7 +192,7 @@ low_visit_ids<-df %>%
   filter(year == 2023) %>%
   group_by(id) %>%
   summarise(sumvisits_2023 = sum(visits)) %>%
-  filter(sumvisits_2023 < 62) %>%
+  filter(sumvisits_2023 < 300) %>%
   pull(id)
 
 totvisitsN2024<-df %>% # Total cell visits in Nantucket in 2024
@@ -209,7 +211,7 @@ FtotvisitsN2024<-df %>% # Filtered total cell visits in Nantucket in 2024
   summarise(sumvisits = sum(visits)) %>% 
   as.numeric()
 
-cvf<-totvisitsN2024/FtotvisitsN2024 # Conversion factor to get from filtered visits for visitation model to total visits for impact assessment
+cvf<-totvisitsN2024/FtotvisitsN2024 # Conversion factor to get from filtered cell visits for visitation model to total cell visits for impact assessment
 
 wth<-list.files("Data/", pattern = "AIRPORT.*\\.csv$", full.names = TRUE) %>% # Weather data NOAA NCEI
   map_dfr(function(f) {
@@ -237,17 +239,21 @@ rm(wth,full_grid,valid_dates,meta)
 
 
 # Visitation model --------------------------------------------------------
-df<-df %>%
-  filter(format(date, "%m") == "07") %>% # Only July dates to avoid contamination that began in LC and Westport starting 8/1
+# Average impact 7-16 to 7-31 (raw cell visit counts)
+dfavg<-df %>%
+  filter(date >= as.Date("2024-06-15") & date < as.Date("2024-07-31")) %>% # Avoids contamination that began in LC and Westport starting 8/1
+  #filter(City %in% c("Aquinnah","Chilmark","Edgartown","Oak Bluffs", "Nantucket")) %>% 
+  #filter(City %ni% c("Aquinnah","Chilmark","Edgartown","Oak Bluffs")) %>% 
   mutate(
-    post = date >= as.Date("2024-07-16") , # TRUE if on or after July 16
+    post = date >= as.Date("2024-07-16") & date <= as.Date("2024-07-23") , # Relevant treatment window
+    #post = date == as.Date("2024-07-17"), # Treatment day
     treated = City == "Nantucket", # TRUE only for Nantucket
     treat_post = post * treated, # DiD interaction term
     temp_bin = factor(cut(tempmaxF, breaks = c(60, 70, 80, 90, 100), right = TRUE)),
     day_of_week = weekdays(as.Date(date))
   )
 
-df <- df %>%
+dfavg <- dfavg %>%
   mutate(
     id = factor(id),
     dayofmonth = factor(dayofmonth),
@@ -255,16 +261,202 @@ df <- df %>%
   )
 
 model<- feols(
-  visits ~ treat_post + temp_bin + precIn | source + dayofmonth + day_of_week + year,
-  data = df,
-  vcov = cluster ~ source
-)
+  #visits ~ treat_post + temp_bin + precIn | id + dayofmonth + day_of_week + year,
+  #visits ~ treat_post + temp_bin + precIn | id + day_of_week,
+  visits ~ treat_post | id + date,
+  #vcov = cluster ~ City,
+  data = dfavg
+  )
 
 summary(model)
 
-print(bt_result<-boottest(model, param = "treat_post", clustid = "source", B = 9999,type = "webb"))
+# print(bt_result<-boottest(model, param = "treat_post", clustid = "City", B = 9999,type = "webb")) Wild clustered standard errors for treatment effect
 
-total_effect<-as.numeric(coef(model)["treat_post"] * 16 * cf)
+perm_unit <- "id" # {"id" or "City" - unit for permutation} 
+
+n_treated <- dfavg %>%
+  filter(treated) %>%
+  distinct(.data[[perm_unit]]) %>%
+  nrow()
+
+controls <- dfavg %>% # Design-based permutation inference
+  filter(!treated) %>%
+  distinct(.data[[perm_unit]]) %>%
+  pull()
+
+n_perm <- 500
+perm_estimates <- numeric(n_perm)
+
+set.seed(123)
+for (i in 1:n_perm) {
+  placebo <- sample(controls, size = n_treated, replace = FALSE) # Randomly select control(s) to be treated
+  
+  dfavg_perm <- dfavg %>%
+    mutate(
+      placebo_treated = .data[[perm_unit]] %in% placebo,
+      placebo_treat_post = placebo_treated * post
+    )
+  
+  mod_perm <- feols(
+    visits ~ placebo_treat_post | id + date,
+    data = dfavg_perm
+  )
+  
+  perm_estimates[i] <- coef(mod_perm)["placebo_treat_post"]
+}
+
+p_val <- mean(abs(perm_estimates) >= abs(coef(model)["treat_post"])) # Compare real estimate to placebo distribution
+
+ggplot(tibble(estimate = perm_estimates), aes(x = estimate)) +
+  geom_histogram(bins = 40, fill = "gray80", color = "black") +
+  geom_vline(xintercept = coef(model)["treat_post"], color = "red", linetype = "dashed", size = 1.2) +
+  labs(
+    title = "Permutation Distribution of Placebo Treatment Effects",
+    subtitle = paste0("True effect shown in red | p-value = ", signif(p_val, 3)),
+    x = "Estimated Effect",
+    y = "Frequency"
+  ) +
+  theme_minimal(base_size = 14)
+
+# Treatment is based on geographic proximity, beaches aren't affected randomly across space via town boundaries, start here
+
+
+#total_effect<-as.numeric(coef(model)["treat_post"] * 16 * cf * cvf)
+
+# # # Average impact 7-16 to 7-31 (normalized cell visit counts, by annual mean)
+# dfavgr <- df %>%
+#   filter(date >= as.Date("2023-06-15") & date < as.Date("2024-07-23")) %>% # Avoids contamination that began in LC and Westport starting 8/1
+#   mutate(
+#     year = as.character(year),  # Temporarily convert to character for group_by
+#     date = as.Date(date),
+#     post = date >= as.Date("2024-07-16"),
+#     treated = City == "Nantucket",
+#     treat_post = post * treated,
+#     temp_bin = factor(cut(tempmaxF, breaks = c(60, 70, 80, 90, 100), right = TRUE)),
+#     day_of_week = weekdays(date)
+#   ) %>%
+#   group_by(id, year) %>%
+#   mutate(
+#     baseline_mean = mean(visits[date < as.Date("2024-07-16")], na.rm = TRUE),
+#     visits_rel = visits / baseline_mean
+#   ) %>%
+#   ungroup()
+# 
+# dfavgr <- dfavgr %>%
+#   mutate(
+#     id = factor(id),
+#     year = factor(year),
+#     dayofmonth = factor(dayofmonth),
+#     day_of_week = factor(day_of_week)
+#   ) %>%
+#   filter(is.finite(visits_rel))  # Drop if baseline_mean was 0 or NA
+# 
+# model <- feols(
+#   visits_rel ~ treat_post + temp_bin + precIn | id + dayofmonth + day_of_week + year,
+#   data = dfavgr,
+#   vcov = cluster ~ id
+# )
+# 
+# summary(model)
+# 
+# print(bt_result<-boottest(model, param = "treat_post", clustid = "City", B = 9999,type = "webb"))
+
+# Event study with discrete bins of days for pre-post 
+nbins<-1 # Number of days binned together
+df_esn <- df %>%
+  filter(date >= as.Date("2024-07-01") & date < as.Date("2024-08-01")) %>% 
+  mutate(
+    rel_day = as.integer(date - as.Date("2024-07-16")),
+    event_bin = floor(rel_day / nbins),  # numeric for clean ordering
+    treated = City == "Nantucket",
+    temp_bin = factor(cut(tempmaxF, breaks = c(60, 70, 80, 90, 100), right = TRUE)),
+    day_of_week = weekdays(date)
+  )
+
+model_esn <- feols(
+  visits ~ i(event_bin, treated, ref = -1) + temp_bin + precIn | id + dayofmonth + day_of_week,
+  data = df_esn,
+  cluster = ~City
+)
+
+tidy_esn <- tibble::tibble(
+  term = names(coef(model_esn)),
+  estimate = unname(coef(model_esn)),
+  conf.low = confint(model_esn)[, 1],
+  conf.high = confint(model_esn)[, 2]
+) %>%
+  filter(grepl("^event_bin::[-0-9]+:treated$", term)) %>%
+  mutate(
+    bin = as.numeric(gsub("^event_bin::([-0-9]+):treated$", "\\1", term))
+  ) %>%
+  arrange(bin)
+
+ggplot(tidy_esn, aes(x = bin, y = estimate)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.2) +
+  geom_hline(yintercept = 0, linetype = "solid", color = "gray40") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "gray40") +
+  labs(
+    x = paste0(nbins,"-day bins (relative to event)"),
+    y = "Effect on visits",
+    title = paste0("Event Study:",nbins,"-Day Bins (Nantucket Treatment)")
+  ) +
+  theme_minimal()
+
+# Event study with all pre-event days binned together, and post binned flexibly into n days
+nbins <- 3  # Number of days binned together
+
+df_esn <- df %>%
+  filter(date >= as.Date("2024-07-01") & date < as.Date("2024-08-01")) %>% 
+  mutate(
+    rel_day = as.integer(date - as.Date("2024-07-16")),
+    event_bin = case_when(
+      rel_day < 0 ~ "pre",
+      TRUE ~ as.character(floor(rel_day / nbins))
+    ),
+    treated = City == "Nantucket",
+    temp_bin = factor(cut(tempmaxF, breaks = c(60, 70, 80, 90, 100), right = TRUE)),
+    day_of_week = weekdays(date)
+  )
+
+df_esn <- df_esn %>%
+  mutate(
+    id = factor(id),
+    dayofmonth = factor(dayofmonth),
+    day_of_week = factor(day_of_week)
+  )
+
+model_esn <- feols(
+  visits ~ i(event_bin, treated, ref = "pre") + temp_bin + precIn | id + dayofmonth + day_of_week,
+  data = df_esn,
+  cluster = ~id
+)
+
+print(bt_result<-boottest(model_esn, param = "event_bin::2:treated", clustid = "id", B = 9999,type = "webb"))
+
+tidy_esn <- tibble::tibble(
+  term = names(coef(model_esn)),
+  estimate = unname(coef(model_esn)),
+  conf.low = confint(model_esn)[, 1],
+  conf.high = confint(model_esn)[, 2]
+) %>%
+  filter(grepl("^event_bin::.*:treated$", term)) %>%
+  mutate(
+    bin = as.numeric(gsub("^event_bin::(.*):treated$", "\\1", term))
+  ) %>%
+  arrange(bin)
+
+ggplot(tidy_esn, aes(x = bin, y = estimate)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.2) +
+  geom_hline(yintercept = 0, linetype = "solid", color = "gray40") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "gray40") +
+  labs(
+    x = paste0(nbins, "-day bins (relative to event)"),
+    y = "Effect on visits",
+    title = paste0("Event Study: ", nbins, "-Day Bins (Nantucket Treatment)")
+  ) +
+  theme_minimal()
 
 
 # Robustness tests --------------------------------------------------------
