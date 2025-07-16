@@ -142,7 +142,8 @@ dfs$vd<-1 # Each device as a visitor day
 
 df<-dfs %>% 
   group_by(DAY_IN_FEATURE,id,Name,City,State) %>% 
-  summarise(visits = sum(vd,na.rm = TRUE)) %>% 
+  summarise(visits = sum(vd,na.rm = TRUE),
+            visitorhours = sum(duration_min,na.rm = TRUE)/60) %>% 
   mutate(year = as.factor(year(DAY_IN_FEATURE)), dayofmonth = format(as.Date(DAY_IN_FEATURE),"%m-%d")) 
 
 # Filling in zeros for dates without any visits
@@ -164,6 +165,7 @@ full_grid <- crossing(meta, valid_dates)
 df <- full_grid %>%
   left_join(df, by = c("id", "Name", "City", "State", "DAY_IN_FEATURE")) %>%
   mutate(visits = replace_na(visits, 0),
+         visitorhours = replace_na(visitorhours,0),
          year = year(DAY_IN_FEATURE),
          dayofmonth = format(DAY_IN_FEATURE, "%m-%d"),
          DAY_IN_FEATURE = as.character(DAY_IN_FEATURE),
@@ -178,40 +180,48 @@ df <- full_grid %>%
 #   scale_x_discrete(breaks = unique(df$dayofmonth)[seq(1, length(unique(df$dayofmonth)), by = 14)]) +
 #   facet_wrap(~id)
 
-nv<-62 # Threshold under which to exclude beaches
+# df %>% group_by(year, id) %>% # Scatterplot of visitor hours per beach, 2023 vs 2024
+#   summarize(visitdurationhrs = sum(visitorhours, na.rm = TRUE) / sum(visits, na.rm = TRUE), .groups = 'drop') %>% drop_na(visitdurationhrs) %>%
+#   pivot_wider(names_from = year, values_from = visitdurationhrs, names_prefix = "visit_dur_") %>% drop_na(visit_dur_2023, visit_dur_2024) %>% 
+#   ggplot(aes(x = visit_dur_2023, y = visit_dur_2024)) + 
+#   geom_point(alpha = 0.7, size = 3) +
+#   geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") +
+#   labs(
+#     title = "Visit Duration Hours Per Visit: 2023 vs. 2024", 
+#     x = "Visit Duration Hours Per Visit (2023)",
+#     y = "Visit Duration Hours Per Visit (2024)"
+#   ) +
+#   theme_minimal() +
+#   coord_fixed()
 
-df %>% # Total cell visits by beach id
-  #filter(City == "Nantucket") %>%
-  filter(year == 2023) %>% 
-  group_by(Name,State,City,year) %>%
-  summarise(sumvisits = sum(visits)) %>%
-  arrange(desc(sumvisits)) %>%
-  print(n = nrow(.))
+# df %>% # Total cell visits and visitor hours by beach id
+#   #filter(City == "Nantucket") %>%
+#   filter(year == 2024) %>%
+#   group_by(id,Name,State,City,year) %>%
+#   summarise(sumvisits = sum(visits), sumvisitorhours = sum(visitorhours)) %>%
+#   arrange(desc(sumvisits)) %>%
+#   print(n = nrow(.))
+
+nv<-62 # Threshold under which to exclude beaches
+`%ni%`<- Negate(`%in%`)
 
 low_visit_ids<-df %>%
   filter(year == 2023) %>%
   group_by(id) %>%
   summarise(sumvisits_2023 = sum(visits)) %>%
-  filter(sumvisits_2023 < 300) %>%
+  filter(sumvisits_2023 < nv) %>%
   pull(id)
 
-totvisitsN2024<-df %>% # Total cell visits in Nantucket in 2024
-  filter(City == "Nantucket") %>%
-  filter(year == 2024) %>% 
-  summarise(sumvisits = sum(visits)) %>% 
-  as.numeric()
+cvf<-df %>% # Conversion factor from sampled visits to total cell visits for Nantucket
+  filter(City == "Nantucket") %>% filter(year == 2024) %>% summarise(sumvisits = sum(visits)) %>% as.numeric() /
+  df %>% filter(City == "Nantucket" & id %ni% low_visit_ids) %>% filter(year == 2024) %>% summarise(sumvisits = sum(visits)) %>% as.numeric()
 
-`%ni%`<- Negate(`%in%`)
-df<-df %>% 
+cvhf<-df %>% # Conversion factor from sampled visits to total cell visithours for Nantucket 
+  filter(City == "Nantucket") %>% filter(year == 2024) %>% summarise(sumvh = sum(visitorhours)) %>% as.numeric() /
+  df %>% filter(City == "Nantucket" & id %ni% low_visit_ids) %>% filter(year == 2024) %>% summarise(sumvh = sum(visitorhours)) %>% as.numeric()
+
+df<-df %>% # Filtering out low visit beaches 
   filter(id %ni% low_visit_ids)
-
-FtotvisitsN2024<-df %>% # Filtered total cell visits in Nantucket in 2024
-  filter(City == "Nantucket") %>%
-  filter(year == 2024) %>% 
-  summarise(sumvisits = sum(visits)) %>% 
-  as.numeric()
-
-cvf<-totvisitsN2024/FtotvisitsN2024 # Conversion factor to get from filtered cell visits for visitation model to total cell visits for impact assessment
 
 wth<-list.files("Data/", pattern = "AIRPORT.*\\.csv$", full.names = TRUE) %>% # Weather data NOAA NCEI
   map_dfr(function(f) {
@@ -260,11 +270,14 @@ dfavg <- dfavg %>%
     day_of_week = factor(day_of_week)
   )
 
+#formul<-visits ~ treat_post | id + date
+#formul<-visits ~ treat_post + temp_bin + precIn | id + date
+formul<-visitorhours ~ treat_post | id + date
+#formul<-visitorhours ~ treat_post + temp_bin + precIn | id + date
+
 model<- feols(
-  #visits ~ treat_post + temp_bin + precIn | id + dayofmonth + day_of_week + year,
-  #visits ~ treat_post + temp_bin + precIn | id + day_of_week,
-  visits ~ treat_post | id + date,
   #vcov = cluster ~ City,
+  formul,
   data = dfavg
   )
 
@@ -272,7 +285,7 @@ summary(model)
 
 # print(bt_result<-boottest(model, param = "treat_post", clustid = "City", B = 9999,type = "webb")) Wild clustered standard errors for treatment effect
 
-perm_unit <- "id" # {"id" or "City" - unit for permutation} 
+perm_unit <- "City" # {"id" or "City" - unit for permutation} 
 
 n_treated <- dfavg %>%
   filter(treated) %>%
@@ -298,7 +311,7 @@ for (i in 1:n_perm) {
     )
   
   mod_perm <- feols(
-    visits ~ placebo_treat_post | id + date,
+    as.formula(gsub("treat_post", "placebo_treat_post", deparse(formul))), # Swaps out treat_post for placebo_treat_post from predefined formula
     data = dfavg_perm
   )
   
