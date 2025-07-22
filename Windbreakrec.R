@@ -180,19 +180,33 @@ df <- full_grid %>%
 #   scale_x_discrete(breaks = unique(df$dayofmonth)[seq(1, length(unique(df$dayofmonth)), by = 14)]) +
 #   facet_wrap(~id)
 
-# df %>% group_by(year, id) %>% # Scatterplot of visitor hours per beach, 2023 vs 2024
-#   summarize(visitdurationhrs = sum(visitorhours, na.rm = TRUE) / sum(visits, na.rm = TRUE), .groups = 'drop') %>% drop_na(visitdurationhrs) %>%
-#   pivot_wider(names_from = year, values_from = visitdurationhrs, names_prefix = "visit_dur_") %>% drop_na(visit_dur_2023, visit_dur_2024) %>% 
-#   ggplot(aes(x = visit_dur_2023, y = visit_dur_2024)) + 
-#   geom_point(alpha = 0.7, size = 3) +
-#   geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") +
-#   labs(
-#     title = "Visit Duration Hours Per Visit: 2023 vs. 2024", 
-#     x = "Visit Duration Hours Per Visit (2023)",
-#     y = "Visit Duration Hours Per Visit (2024)"
-#   ) +
-#   theme_minimal() +
-#   coord_fixed()
+df %>% group_by(year, id) %>% # Scatterplot of visitor hours per beach, 2023 vs 2024
+  summarize(visitdurationhrs = sum(visitorhours, na.rm = TRUE) / sum(visits, na.rm = TRUE), .groups = 'drop') %>%
+  drop_na(visitdurationhrs) %>%
+  pivot_wider(
+    names_from = year,
+    values_from = visitdurationhrs,
+    names_prefix = "visit_dur_"
+  ) %>% drop_na(visit_dur_2023, visit_dur_2024) %>%
+  {
+    mod <- lm(visit_dur_2024 ~ visit_dur_2023, data = .)
+    r2 <- summary(mod)$r.squared
+    label <- paste0("R² = ", round(r2, 3))
+    
+    ggplot(., aes(x = visit_dur_2023, y = visit_dur_2024)) +
+      geom_point(alpha = 0.7, size = 3) +
+      geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") +
+      geom_smooth(method = "lm", se = FALSE, color = "blue") +
+      annotate("text", x = Inf, y = -Inf, hjust = 1.1, vjust = -1.1,
+               label = label, size = 4) +
+      labs(
+        title = "Visit Duration Hours Per Visit: 2023 vs. 2024",
+        x = "Visit Duration Hours Per Visit (2023)",
+        y = "Visit Duration Hours Per Visit (2024)"
+      ) +
+      theme_minimal() +
+      coord_fixed()
+  }
 
 # df %>% # Total cell visits and visitor hours by beach id
 #   #filter(City == "Nantucket") %>%
@@ -245,6 +259,19 @@ df<-df %>% mutate(date = as.Date(DAY_IN_FEATURE),
   ungroup() %>% # Ungroup is needed because DAY_IN_FEATURE was previously a grouping variable
   select(!DAY_IN_FEATURE) %>%
   left_join(wth, by = c("date","station"))
+
+al_treat_groups<-al %>% filter(id %in% unique(df$id) & City != "Nantucket") # Only visited and non-treated beaches
+
+dist_matrix<-matrix(as.numeric(st_distance(st_transform(al_treat_groups, 26919))), nrow = nrow(al_treat_groups))
+
+al_treat_groups<-al_treat_groups %>% mutate(group = map(seq_len(n()), ~ al_treat_groups$id[which(dist_matrix[.x, ] <= 23000)])) # Identifying groups of beaches within 23km of each other
+
+al_treat_groups %>% 
+  mutate(group_str = map_chr(seq_along(group), ~ paste0(sort(group[[.x]]), collapse = "-"))) %>% 
+  count(group_str, name = "group_frequency") %>% 
+  arrange(desc(group_frequency)) %>% 
+  st_drop_geometry()
+
 rm(wth,full_grid,valid_dates,meta)
 
 
@@ -255,7 +282,7 @@ dfavg<-df %>%
   #filter(City %in% c("Aquinnah","Chilmark","Edgartown","Oak Bluffs", "Nantucket")) %>% 
   #filter(City %ni% c("Aquinnah","Chilmark","Edgartown","Oak Bluffs")) %>% 
   mutate(
-    post = date >= as.Date("2024-07-16") & date <= as.Date("2024-07-23") , # Relevant treatment window
+    post = date >= as.Date("2024-07-16") & date <= as.Date("2024-07-26") , # Relevant treatment window
     #post = date == as.Date("2024-07-17"), # Treatment day
     treated = City == "Nantucket", # TRUE only for Nantucket
     treat_post = post * treated, # DiD interaction term
@@ -270,9 +297,9 @@ dfavg <- dfavg %>%
     day_of_week = factor(day_of_week)
   )
 
-#formul<-visits ~ treat_post | id + date
+formul<-visits ~ treat_post | id + date
 #formul<-visits ~ treat_post + temp_bin + precIn | id + date
-formul<-visitorhours ~ treat_post | id + date
+#formul<-visitorhours ~ treat_post | id + date
 #formul<-visitorhours ~ treat_post + temp_bin + precIn | id + date
 
 model<- feols(
@@ -285,37 +312,63 @@ summary(model)
 
 # print(bt_result<-boottest(model, param = "treat_post", clustid = "City", B = 9999,type = "webb")) Wild clustered standard errors for treatment effect
 
-perm_unit <- "City" # {"id" or "City" - unit for permutation} 
+perm_unit <- "spatial_cluster" # {"id", "City", "spatial_cluster" - unit for permutation} 
+n_perm <- 1000
+set.seed(123)
 
-n_treated <- dfavg %>%
-  filter(treated) %>%
-  distinct(.data[[perm_unit]]) %>%
-  nrow()
+if (perm_unit == "spatial_cluster") {
+  valid_placebo_clusters <- al_treat_groups %>%
+    mutate(group_str = map_chr(group, ~ paste(sort(.x), collapse = "-"))) %>%
+    distinct(group_str, group)
+  
+  n_treated <- 1
+  
+} else {
+  if (!perm_unit %in% c("id","City")) {
+    stop(glue::glue("perm_unit '{perm_unit}' is not an acceptable unit of permutation"))
+  }
+  
+  n_treated <- dfavg %>%
+    filter(treated) %>%
+    distinct(.data[[perm_unit]]) %>%
+    nrow()
+  
+  controls <- dfavg %>%
+    filter(!treated) %>%
+    distinct(.data[[perm_unit]]) %>%
+    pull()
+}
 
-controls <- dfavg %>% # Design-based permutation inference
-  filter(!treated) %>%
-  distinct(.data[[perm_unit]]) %>%
-  pull()
-
-n_perm <- 500
 perm_estimates <- numeric(n_perm)
 
-set.seed(123)
 for (i in 1:n_perm) {
-  placebo <- sample(controls, size = n_treated, replace = FALSE) # Randomly select control(s) to be treated
   
-  dfavg_perm <- dfavg %>%
-    mutate(
-      placebo_treated = .data[[perm_unit]] %in% placebo,
-      placebo_treat_post = placebo_treated * post
-    )
+  dfavg_perm <- if (perm_unit == "spatial_cluster") {
+    placebo_cluster_ids <- sample(valid_placebo_clusters$group, size = 1)[[1]]
+    
+    dfavg %>%
+      mutate(
+        placebo_treated = id %in% placebo_cluster_ids,
+        placebo_treat_post = placebo_treated * post
+      )
+    
+  } else {
+    placebo <- sample(controls, size = n_treated, replace = FALSE)
+    
+    dfavg %>%
+      mutate(
+        placebo_treated = .data[[perm_unit]] %in% placebo,
+        placebo_treat_post = placebo_treated * post
+      )
+  }
   
   mod_perm <- feols(
-    as.formula(gsub("treat_post", "placebo_treat_post", deparse(formul))), # Swaps out treat_post for placebo_treat_post from predefined formula
+    as.formula(gsub("treat_post", "placebo_treat_post", deparse(formul))),
     data = dfavg_perm
   )
   
-  perm_estimates[i] <- coef(mod_perm)["placebo_treat_post"]
+  mod_coef <- tryCatch(coef(mod_perm)["placebo_treat_post"], error = function(e) NA)
+  perm_estimates[i] <- mod_coef
 }
 
 p_val <- mean(abs(perm_estimates) >= abs(coef(model)["treat_post"])) # Compare real estimate to placebo distribution
@@ -330,8 +383,6 @@ ggplot(tibble(estimate = perm_estimates), aes(x = estimate)) +
     y = "Frequency"
   ) +
   theme_minimal(base_size = 14)
-
-# Treatment is based on geographic proximity, beaches aren't affected randomly across space via town boundaries, start here
 
 
 #total_effect<-as.numeric(coef(model)["treat_post"] * 16 * cf * cvf)
