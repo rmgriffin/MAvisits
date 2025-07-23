@@ -276,102 +276,184 @@ rm(wth,full_grid,valid_dates,meta)
 
 
 # Visitation model --------------------------------------------------------
-# Average impact 7-16 to 7-31 (raw cell visit counts)
-dfavg<-df %>%
-  filter(date >= as.Date("2024-06-15") & date < as.Date("2024-07-31")) %>% # Avoids contamination that began in LC and Westport starting 8/1
-  #filter(City %in% c("Aquinnah","Chilmark","Edgartown","Oak Bluffs", "Nantucket")) %>% 
-  #filter(City %ni% c("Aquinnah","Chilmark","Edgartown","Oak Bluffs")) %>% 
-  mutate(
-    post = date >= as.Date("2024-07-16") & date <= as.Date("2024-07-26") , # Relevant treatment window
-    #post = date == as.Date("2024-07-17"), # Treatment day
-    treated = City == "Nantucket", # TRUE only for Nantucket
-    treat_post = post * treated, # DiD interaction term
-    temp_bin = factor(cut(tempmaxF, breaks = c(60, 70, 80, 90, 100), right = TRUE)),
-    day_of_week = weekdays(as.Date(date))
+DiD_ri <- function(df, # Input dataframe
+                   al_treat_groups, # Potential groups of affected beaches for randomization inference
+                   mode = c("window", "daily"), # Estimate treatment effect for a window of time, or a series of days
+                   dates, # Dates for "daily" (seq(as.Date("2024-07-15"), as.Date("2024-07-31"), by = "day")) or "window" (as.Date(c("2024-07-16", "2024-07-27")))
+                   model_formula, # Formula for model written as FEOLS model 
+                   perm_unit = "spatial_cluster", # Choice of grouping for randomization permutation. Options {"spatial_cluster", "City", "id"}
+                   n_perm = 1000, # Number of permutations for randomization inference
+                   treated_city = "Nantucket", # City name for treated beaches
+                   return_plot = FALSE, # Return plot of permutation distribution and treatment effect
+                   seed = 123) { # Seed for randomization
+  
+  mode <- match.arg(mode)
+  set.seed(seed)
+  
+  results <- list()
+  all_permutations <- list()
+  
+  if (mode == "window") {
+    date_list <- list(dates)
+    label_list <- paste0(min(dates), "_to_", max(dates))
+  } else {
+    date_list <- as.list(dates)
+    label_list <- as.character(dates)
+  }
+  
+  for (i in seq_along(date_list)) {
+    current_date <- date_list[[i]]
+    date_label <- label_list[i]
+    
+    dfavg <- df %>%
+      filter(date >= as.Date("2024-06-15") & date < as.Date("2024-07-31")) %>% # Avoids contamination that began in LC and Westport starting 8/1
+      mutate(
+        post = if (mode == "window") {
+          date >= current_date[1] & date <= current_date[length(current_date)]
+        } else {
+          date == current_date
+        },
+        treated = City == treated_city,
+        treat_post = post * treated,
+        temp_bin = factor(cut(tempmaxF, breaks = c(60, 70, 80, 90, 100), right = TRUE)),
+        day_of_week = factor(weekdays(date)),
+        id = factor(id),
+        dayofmonth = factor(dayofmonth)
+      )
+    
+    model <- feols(model_formula, data = dfavg) # Fit original model
+    point_estimate <- coef(model)["treat_post"]
+    
+    if (perm_unit == "spatial_cluster") { # Identify permutation units
+      valid_placebo_clusters <- al_treat_groups %>%
+        mutate(group_str = map_chr(group, ~ paste(sort(.x), collapse = "-"))) %>%
+        distinct(group_str, group)
+      n_treated <- 1
+    } else {
+      if (!perm_unit %in% c("id", "City")) {
+        stop(glue::glue("perm_unit '{perm_unit}' is not an acceptable unit of permutation"))
+      }
+      n_treated <- dfavg %>% filter(treated) %>% distinct(.data[[perm_unit]]) %>% nrow()
+      controls <- dfavg %>% filter(!treated) %>% distinct(.data[[perm_unit]]) %>% pull()
+    }
+    
+    # Prepare model formula strings
+    model_str <- paste(deparse(model_formula), collapse = "")
+    parts <- strsplit(model_str, "\\|", fixed = TRUE)[[1]]
+    rhs_formula <- trimws(parts[1])  # "visitorhours ~ treat_post + ..."
+    fe_formula <- if (length(parts) > 1) trimws(parts[2]) else NULL
+    
+    rhs_placebo <- gsub("\\btreat_post\\b", "placebo_treat_post", rhs_formula)
+    placebo_str <- if (!is.null(fe_formula)) {
+      paste(rhs_placebo, "|", fe_formula)
+    } else {
+      rhs_placebo
+    }
+    
+    perm_estimates <- numeric(n_perm)
+    for (j in 1:n_perm) { # Permutation loop
+      dfavg_perm <- if (perm_unit == "spatial_cluster") {
+        placebo_cluster_ids <- sample(valid_placebo_clusters$group, size = 1)[[1]]
+        dfavg %>%
+          mutate(
+            placebo_treated = id %in% placebo_cluster_ids,
+            placebo_treat_post = placebo_treated * post
+          )
+      } else {
+        placebo <- sample(controls, size = n_treated, replace = FALSE)
+        dfavg %>%
+          mutate(
+            placebo_treated = .data[[perm_unit]] %in% placebo,
+            placebo_treat_post = placebo_treated * post
+          )
+      }
+      
+      mod_perm <- feols(as.formula(placebo_str), data = dfavg_perm)
+      perm_estimates[j] <- tryCatch(coef(mod_perm)["placebo_treat_post"], error = function(e) NA)
+    }
+    
+    p_val <- mean(abs(perm_estimates) >= abs(point_estimate), na.rm = TRUE)
+    
+    results[[i]] <- tibble(
+      label = date_label,
+      estimate = point_estimate,
+      p_val = p_val
+    )
+    
+    perm_df <- tibble(label = date_label, estimate = perm_estimates)
+    all_permutations[[i]] <- perm_df
+  }
+  
+  out <- list(
+    summary = bind_rows(results),
+    permutations = bind_rows(all_permutations)
   )
+  
+  if (return_plot && mode == "window") {
+    # Single plot for one window
+    p <- out$summary$p_val[1]
+    out$plot <- ggplot(out$permutations, aes(x = estimate)) +
+      geom_histogram(fill = "gray80", color = "black", bins = 30) +
+      geom_vline(xintercept = out$summary$estimate[1], color = "red", size = 1.2, linetype = "dashed") +
+      labs(
+        title = "Permutation Distribution of Placebo Treatment Effects",
+        subtitle = paste("True effect shown in red | p-value =", formatC(p, digits = 2, format = "f")),
+        x = "Estimated Effect",
+        y = "Frequency"
+      ) +
+      theme_minimal(base_size = 14)
+    
+  } else if (return_plot && mode == "daily") {
 
-dfavg <- dfavg %>%
-  mutate(
-    id = factor(id),
-    dayofmonth = factor(dayofmonth),
-    day_of_week = factor(day_of_week)
-  )
+    plot_df <- out$permutations %>%
+      left_join(out$summary %>% rename(true_effect = estimate), by = "label") %>%
+      mutate(label_with_p = paste0(label, " (p = ", formatC(p_val, digits = 2, format = "f"), ")"))
+    
+    out$facet_plot <- ggplot(plot_df, aes(x = estimate)) +
+      geom_histogram(fill = "gray80", color = "black", bins = 30) +
+      geom_vline(aes(xintercept = true_effect),
+                 color = "red", linetype = "dashed", size = 1.2) +
+      facet_wrap(~ label_with_p, scales = "free") +
+      labs(
+        title = "Permutation Distribution of Placebo Treatment Effects by Day",
+        x = "Estimated Effect",
+        y = "Frequency"
+      ) +
+      theme_minimal(base_size = 14)
+  }
+  
+  return(out)
+}
 
-formul<-visits ~ treat_post | id + date
+# Might flag beach closures on 8/3 that seem to have a negative impact on visitation
+
+DiD_ri(df = df, al_treat_groups = al_treat_groups,
+       mode = "daily", dates = seq(as.Date("2024-07-09"), as.Date("2024-08-12"), by = "day"),
+       model_formula = visitorhours ~ treat_post | id + date,
+       perm_unit = "spatial_cluster", n_perm = 100, treated_city = "Nantucket", seed = 123, return_plot = TRUE)
+
+DiD_ri(df = df, al_treat_groups = al_treat_groups,
+       mode = "daily", dates = seq(as.Date("2024-07-09"), as.Date("2024-07-21"), by = "day"),
+       model_formula = visitorhours ~ treat_post | id + date,
+       perm_unit = "spatial_cluster", n_perm = 100, treated_city = "Nantucket", seed = 123, return_plot = FALSE)
+
+DiD_ri(df = df, al_treat_groups = al_treat_groups,
+       mode = "window", dates = as.Date(c("2024-07-16", "2024-07-27")),
+       model_formula = visits ~ treat_post | id + date,
+       perm_unit = "spatial_cluster", n_perm = 100, treated_city = "Nantucket", seed = 123, return_plot = TRUE)
+
+
+
+
+#formul<-visits ~ treat_post | id + date
 #formul<-visits ~ treat_post + temp_bin + precIn | id + date
-#formul<-visitorhours ~ treat_post | id + date
+formul<-visitorhours ~ treat_post | id + date
 #formul<-visitorhours ~ treat_post + temp_bin + precIn | id + date
 
-model<- feols(
-  #vcov = cluster ~ City,
-  formul,
-  data = dfavg
-  )
-
-summary(model)
 
 # print(bt_result<-boottest(model, param = "treat_post", clustid = "City", B = 9999,type = "webb")) Wild clustered standard errors for treatment effect
 
-perm_unit <- "spatial_cluster" # {"id", "City", "spatial_cluster" - unit for permutation} 
-n_perm <- 1000
-set.seed(123)
 
-if (perm_unit == "spatial_cluster") {
-  valid_placebo_clusters <- al_treat_groups %>%
-    mutate(group_str = map_chr(group, ~ paste(sort(.x), collapse = "-"))) %>%
-    distinct(group_str, group)
-  
-  n_treated <- 1
-  
-} else {
-  if (!perm_unit %in% c("id","City")) {
-    stop(glue::glue("perm_unit '{perm_unit}' is not an acceptable unit of permutation"))
-  }
-  
-  n_treated <- dfavg %>%
-    filter(treated) %>%
-    distinct(.data[[perm_unit]]) %>%
-    nrow()
-  
-  controls <- dfavg %>%
-    filter(!treated) %>%
-    distinct(.data[[perm_unit]]) %>%
-    pull()
-}
-
-perm_estimates <- numeric(n_perm)
-
-for (i in 1:n_perm) {
-  
-  dfavg_perm <- if (perm_unit == "spatial_cluster") {
-    placebo_cluster_ids <- sample(valid_placebo_clusters$group, size = 1)[[1]]
-    
-    dfavg %>%
-      mutate(
-        placebo_treated = id %in% placebo_cluster_ids,
-        placebo_treat_post = placebo_treated * post
-      )
-    
-  } else {
-    placebo <- sample(controls, size = n_treated, replace = FALSE)
-    
-    dfavg %>%
-      mutate(
-        placebo_treated = .data[[perm_unit]] %in% placebo,
-        placebo_treat_post = placebo_treated * post
-      )
-  }
-  
-  mod_perm <- feols(
-    as.formula(gsub("treat_post", "placebo_treat_post", deparse(formul))),
-    data = dfavg_perm
-  )
-  
-  mod_coef <- tryCatch(coef(mod_perm)["placebo_treat_post"], error = function(e) NA)
-  perm_estimates[i] <- mod_coef
-}
-
-p_val <- mean(abs(perm_estimates) >= abs(coef(model)["treat_post"])) # Compare real estimate to placebo distribution
 
 ggplot(tibble(estimate = perm_estimates), aes(x = estimate)) +
   geom_histogram(bins = 40, fill = "gray80", color = "black") +
