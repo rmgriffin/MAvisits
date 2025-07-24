@@ -306,7 +306,7 @@ DiD_ri <- function(df, # Input dataframe
     date_label <- label_list[i]
     
     dfavg <- df %>%
-      filter(date >= as.Date("2024-06-15") & date < as.Date("2024-07-31")) %>% # Avoids contamination that began in LC and Westport starting 8/1
+      filter(date >= as.Date("2024-06-15") & date < as.Date("2024-08-15")) %>% # Avoids contamination that began in LC and Westport starting 8/1
       mutate(
         post = if (mode == "window") {
           date >= current_date[1] & date <= current_date[length(current_date)]
@@ -322,6 +322,7 @@ DiD_ri <- function(df, # Input dataframe
       )
     
     model <- feols(model_formula, data = dfavg) # Fit original model
+    # print(bt_result<-boottest(model, param = "treat_post", clustid = "City", B = 9999,type = "webb")) Wild clustered standard errors for treatment effect
     point_estimate <- coef(model)["treat_post"]
     
     if (perm_unit == "spatial_cluster") { # Identify permutation units
@@ -428,46 +429,22 @@ DiD_ri <- function(df, # Input dataframe
 # Might flag beach closures on 8/3 that seem to have a negative impact on visitation
 
 DiD_ri(df = df, al_treat_groups = al_treat_groups,
-       mode = "daily", dates = seq(as.Date("2024-07-09"), as.Date("2024-08-12"), by = "day"),
+       mode = "daily", dates = seq(as.Date("2024-07-09"), as.Date("2024-08-05"), by = "day"),
        model_formula = visitorhours ~ treat_post | id + date,
        perm_unit = "spatial_cluster", n_perm = 100, treated_city = "Nantucket", seed = 123, return_plot = TRUE)
 
 DiD_ri(df = df, al_treat_groups = al_treat_groups,
-       mode = "daily", dates = seq(as.Date("2024-07-09"), as.Date("2024-07-21"), by = "day"),
-       model_formula = visitorhours ~ treat_post | id + date,
-       perm_unit = "spatial_cluster", n_perm = 100, treated_city = "Nantucket", seed = 123, return_plot = FALSE)
+       mode = "daily", dates = seq(as.Date("2024-07-09"), as.Date("2024-08-05"), by = "day"),
+       model_formula = visits ~ treat_post | id + date,
+       perm_unit = "spatial_cluster", n_perm = 100, treated_city = "Nantucket", seed = 123, return_plot = TRUE)
 
-DiD_ri(df = df, al_treat_groups = al_treat_groups,
-       mode = "window", dates = as.Date(c("2024-07-16", "2024-07-27")),
+out<-DiD_ri(df = df, al_treat_groups = al_treat_groups,
+       mode = "window", dates = as.Date(c("2024-07-16", "2024-07-17")),
        model_formula = visits ~ treat_post | id + date,
        perm_unit = "spatial_cluster", n_perm = 100, treated_city = "Nantucket", seed = 123, return_plot = TRUE)
 
 
-
-
-#formul<-visits ~ treat_post | id + date
-#formul<-visits ~ treat_post + temp_bin + precIn | id + date
-formul<-visitorhours ~ treat_post | id + date
-#formul<-visitorhours ~ treat_post + temp_bin + precIn | id + date
-
-
-# print(bt_result<-boottest(model, param = "treat_post", clustid = "City", B = 9999,type = "webb")) Wild clustered standard errors for treatment effect
-
-
-
-ggplot(tibble(estimate = perm_estimates), aes(x = estimate)) +
-  geom_histogram(bins = 40, fill = "gray80", color = "black") +
-  geom_vline(xintercept = coef(model)["treat_post"], color = "red", linetype = "dashed", size = 1.2) +
-  labs(
-    title = "Permutation Distribution of Placebo Treatment Effects",
-    subtitle = paste0("True effect shown in red | p-value = ", signif(p_val, 3)),
-    x = "Estimated Effect",
-    y = "Frequency"
-  ) +
-  theme_minimal(base_size = 14)
-
-
-#total_effect<-as.numeric(coef(model)["treat_post"] * 16 * cf * cvf)
+total_effect<-round(as.numeric(out$summary$estimate)*2*length(unique(df %>% filter(City == "Nantucket") %>% pull(id)))*cf*cvf,0)
 
 # # # Average impact 7-16 to 7-31 (normalized cell visit counts, by annual mean)
 # dfavgr <- df %>%
