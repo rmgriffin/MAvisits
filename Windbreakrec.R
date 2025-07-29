@@ -288,7 +288,7 @@ DiD_ri <- function(df, # Input dataframe
                    treated_city = "Nantucket", # City name for treated beaches
                    return_plot = FALSE, # Return plot of permutation distribution and treatment effect
                    date_range, # Time range over which observations are included in regression, formatted as: as.Date(c("2024-06-15", "2024-08-15"))
-                   test_pretrends = TRUE, # Returns test of parallel pre-trends for period before "dates" using permutation inference (grouping specified via perm_unit)
+                   pretrend_formula = NULL, # Formula for pre-trend model written as FEOLS model. Returns test of parallel pre-trends for period before "dates" using permutation inference (grouping specified via perm_unit)
                    seed = 123) { # Seed for randomization
   
   mode <- match.arg(mode)
@@ -394,59 +394,48 @@ DiD_ri <- function(df, # Input dataframe
     permutations = bind_rows(all_permutations)
   )
   
-  # if (test_pretrends && mode == "window") {
-  #   main_parts <- strsplit(trimws(formula_parts[1]), "~")[[1]]
-  #   outcome_var <- trimws(main_parts[1])
-  #   rhs_vars <- trimws(main_parts[2])
-  #   
-  #   # Construct new RHS for slope test
-  #   rhs_slope <- paste(rhs_vars, "+ treated:time")
-  #   slope_formula <- if (!is.null(fe_formula)) {
-  #     as.formula(paste(outcome_var, "~", rhs_slope, "|", fe_formula))
-  #   } else {
-  #     as.formula(paste(outcome_var, "~", rhs_slope))
-  #   }
-  #   
-  #   pre_df <- df %>%
-  #     filter(date < min(dates)) %>%
-  #     mutate(
-  #       time = as.integer(date - min(date)),
-  #       treated = City == treated_city,
-  #       temp_bin = factor(cut(tempmaxF, breaks = c(60, 70, 80, 90, 100))),
-  #       day_of_week = factor(weekdays(date)),
-  #       id = factor(id),
-  #       dayofmonth = factor(dayofmonth)
-  #     )
-  #   
-  #   pre_model <- feols(slope_formula, data = pre_df)
-  #   real_slope <- tryCatch(coef(pre_model)["treated:time"], error = function(e) NA)
-  #   
-  #   slope_perm <- numeric(n_perm)
-  #   for (j in 1:n_perm) {
-  #     pre_df_perm <- if (perm_unit == "spatial_cluster") {
-  #       placebo_cluster_ids <- sample(al_treat_groups$group, size = 1)[[1]]
-  #       pre_df %>% mutate(placebo = id %in% placebo_cluster_ids)
-  #     } else {
-  #       placebo_ids <- sample(unique(pre_df[[perm_unit]]), size = n_treated, replace = FALSE)
-  #       pre_df %>% mutate(placebo = .data[[perm_unit]] %in% placebo_ids)
-  #     }
-  #     
-  #     placebo_rhs <- paste(rhs_vars, "+ placebo:time")
-  #     placebo_formula <- if (!is.null(fe_formula)) {
-  #       as.formula(paste(outcome_var, "~", placebo_rhs, "|", fe_formula))
-  #     } else {
-  #       as.formula(paste(outcome_var, "~", placebo_rhs))
-  #     }
-  #     
-  #     mod <- tryCatch(feols(placebo_formula, data = pre_df_perm), error = function(e) NULL)
-  #     slope_perm[j] <- tryCatch(coef(mod)["placebo:time"], error = function(e) NA)
-  #   }
-  #   
-  #   out$pretrend_slope <- tibble(
-  #     estimate = real_slope,
-  #     p_val = mean(abs(slope_perm) >= abs(real_slope), na.rm = TRUE)
-  #   )
-  # }
+  if (!is.null(pretrend_formula) && mode == "window") {
+    pre_df <- df %>%
+      filter(date < min(dates)) %>%
+      mutate(
+        time = as.integer(date - min(date)),
+        treated = City == treated_city,
+        temp_bin = factor(cut(tempmaxF, breaks = c(60, 70, 80, 90, 100), right = TRUE)),
+        day_of_week = factor(weekdays(date)),
+        id = factor(id),
+        dayofmonth = factor(dayofmonth)
+      )
+    
+    pre_model <- feols(pretrend_formula, data = pre_df)
+    coef_names <- names(coef(pre_model))
+    real_idx <- grep("^time:treated|^treated:time", coef_names)
+    real_slope <- if (length(real_idx) == 1) coef(pre_model)[real_idx] else NA_real_
+    
+    slope_perm <- replicate(n_perm, {
+      pre_df_perm <- if (perm_unit == "spatial_cluster") {
+        placebo_cluster_ids <- sample(al_treat_groups$group, size = 1)[[1]]
+        pre_df %>% mutate(placebo = id %in% placebo_cluster_ids)
+      } else {
+        placebo_ids <- sample(unique(pre_df[[perm_unit]]), size = n_treated, replace = FALSE)
+        pre_df %>% mutate(placebo = .data[[perm_unit]] %in% placebo_ids)
+      }
+      
+      placebo_formula <- visits ~ time + time:placebo | id
+      
+      mod <- tryCatch(feols(placebo_formula, data = pre_df_perm), error = function(e) NULL)
+      if (!is.null(mod)) {
+        tryCatch(coef(mod)[["time:placeboTRUE"]], error = function(e) NA_real_)
+      } else {
+        NA_real_
+      }
+    })
+    
+    out$pretrend_slope <- tibble(
+      estimate = real_slope,
+      p_val = mean(abs(slope_perm) >= abs(real_slope), na.rm = TRUE)
+    )
+  }
+  
   
   if (return_plot && mode == "window") {
     p <- out$summary$p_val[1]
@@ -527,6 +516,6 @@ ptoutvp$plot
 ptoutvpt<-DiD_ri(df = df, al_treat_groups = al_treat_groups, 
                 mode = "window", dates = as.Date(c("2024-07-16", "2024-07-17")), date_range = as.Date(c("2024-06-15", "2024-07-30")), 
                 model_formula = visits ~ treat_post | id + date,
-                perm_unit = "spatial_cluster", n_perm = 500, treated_city = "Nantucket", seed = 123, return_plot = TRUE, test_pretrends = TRUE)
-ptoutvpt
-
+                perm_unit = "spatial_cluster", n_perm = 500, treated_city = "Nantucket", seed = 123, return_plot = TRUE, 
+                pretrend_formula = visits ~ time + treated:time | id)
+ptoutvpt$pretrend_slope
