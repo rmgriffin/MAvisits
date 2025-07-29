@@ -260,7 +260,7 @@ df<-df %>% mutate(date = as.Date(DAY_IN_FEATURE),
   select(!DAY_IN_FEATURE) %>%
   left_join(wth, by = c("date","station"))
 
-al_treat_groups<-al %>% filter(id %in% unique(df$id) & City != "Nantucket") # Only visited and non-treated beaches
+al_treat_groups<-al %>% filter(id %in% unique(df$id) & City != "Nantucket") # Unique groups of non-treated beaches based on 23km clustering of Nantucket pollution
 
 dist_matrix<-matrix(as.numeric(st_distance(st_transform(al_treat_groups, 26919))), nrow = nrow(al_treat_groups))
 
@@ -272,19 +272,23 @@ al_treat_groups %>%
   arrange(desc(group_frequency)) %>% 
   st_drop_geometry()
 
+df$hourspervisit<-df$visitorhours/df$visits # Hours per visit
+
 rm(wth,full_grid,valid_dates,meta)
 
 
-# Visitation model --------------------------------------------------------
+# DiD visitation model, Nantucket main impact --------------------------------------------------------
 DiD_ri <- function(df, # Input dataframe
                    al_treat_groups, # Potential groups of affected beaches for randomization inference
                    mode = c("window", "daily"), # Estimate treatment effect for a window of time, or a series of days
-                   dates, # Dates for "daily" (seq(as.Date("2024-07-15"), as.Date("2024-07-31"), by = "day")) or "window" (as.Date(c("2024-07-16", "2024-07-27")))
+                   dates, # Treatment window dates for "daily" (seq(as.Date("2024-07-15"), as.Date("2024-07-31"), by = "day")) or "window" (as.Date(c("2024-07-16", "2024-07-27")))
                    model_formula, # Formula for model written as FEOLS model 
                    perm_unit = "spatial_cluster", # Choice of grouping for randomization permutation. Options {"spatial_cluster", "City", "id"}
                    n_perm = 1000, # Number of permutations for randomization inference
                    treated_city = "Nantucket", # City name for treated beaches
                    return_plot = FALSE, # Return plot of permutation distribution and treatment effect
+                   date_range, # Time range over which observations are included in regression, formatted as: as.Date(c("2024-06-15", "2024-08-15"))
+                   test_pretrends = TRUE, # Returns test of parallel pre-trends for period before "dates" using permutation inference (grouping specified via perm_unit)
                    seed = 123) { # Seed for randomization
   
   mode <- match.arg(mode)
@@ -306,7 +310,7 @@ DiD_ri <- function(df, # Input dataframe
     date_label <- label_list[i]
     
     dfavg <- df %>%
-      filter(date >= as.Date("2024-06-15") & date < as.Date("2024-08-15")) %>% # Avoids contamination that began in LC and Westport starting 8/1
+      filter(date >= date_range[1] & date <= date_range[2]) %>% # 2024-07-31 avoids contamination that began in LC and Westport starting 8/1
       mutate(
         post = if (mode == "window") {
           date >= current_date[1] & date <= current_date[length(current_date)]
@@ -341,7 +345,7 @@ DiD_ri <- function(df, # Input dataframe
     # Prepare model formula strings
     model_str <- paste(deparse(model_formula), collapse = "")
     parts <- strsplit(model_str, "\\|", fixed = TRUE)[[1]]
-    rhs_formula <- trimws(parts[1])  # "visitorhours ~ treat_post + ..."
+    rhs_formula <- trimws(parts[1])
     fe_formula <- if (length(parts) > 1) trimws(parts[2]) else NULL
     
     rhs_placebo <- gsub("\\btreat_post\\b", "placebo_treat_post", rhs_formula)
@@ -390,8 +394,61 @@ DiD_ri <- function(df, # Input dataframe
     permutations = bind_rows(all_permutations)
   )
   
+  # if (test_pretrends && mode == "window") {
+  #   main_parts <- strsplit(trimws(formula_parts[1]), "~")[[1]]
+  #   outcome_var <- trimws(main_parts[1])
+  #   rhs_vars <- trimws(main_parts[2])
+  #   
+  #   # Construct new RHS for slope test
+  #   rhs_slope <- paste(rhs_vars, "+ treated:time")
+  #   slope_formula <- if (!is.null(fe_formula)) {
+  #     as.formula(paste(outcome_var, "~", rhs_slope, "|", fe_formula))
+  #   } else {
+  #     as.formula(paste(outcome_var, "~", rhs_slope))
+  #   }
+  #   
+  #   pre_df <- df %>%
+  #     filter(date < min(dates)) %>%
+  #     mutate(
+  #       time = as.integer(date - min(date)),
+  #       treated = City == treated_city,
+  #       temp_bin = factor(cut(tempmaxF, breaks = c(60, 70, 80, 90, 100))),
+  #       day_of_week = factor(weekdays(date)),
+  #       id = factor(id),
+  #       dayofmonth = factor(dayofmonth)
+  #     )
+  #   
+  #   pre_model <- feols(slope_formula, data = pre_df)
+  #   real_slope <- tryCatch(coef(pre_model)["treated:time"], error = function(e) NA)
+  #   
+  #   slope_perm <- numeric(n_perm)
+  #   for (j in 1:n_perm) {
+  #     pre_df_perm <- if (perm_unit == "spatial_cluster") {
+  #       placebo_cluster_ids <- sample(al_treat_groups$group, size = 1)[[1]]
+  #       pre_df %>% mutate(placebo = id %in% placebo_cluster_ids)
+  #     } else {
+  #       placebo_ids <- sample(unique(pre_df[[perm_unit]]), size = n_treated, replace = FALSE)
+  #       pre_df %>% mutate(placebo = .data[[perm_unit]] %in% placebo_ids)
+  #     }
+  #     
+  #     placebo_rhs <- paste(rhs_vars, "+ placebo:time")
+  #     placebo_formula <- if (!is.null(fe_formula)) {
+  #       as.formula(paste(outcome_var, "~", placebo_rhs, "|", fe_formula))
+  #     } else {
+  #       as.formula(paste(outcome_var, "~", placebo_rhs))
+  #     }
+  #     
+  #     mod <- tryCatch(feols(placebo_formula, data = pre_df_perm), error = function(e) NULL)
+  #     slope_perm[j] <- tryCatch(coef(mod)["placebo:time"], error = function(e) NA)
+  #   }
+  #   
+  #   out$pretrend_slope <- tibble(
+  #     estimate = real_slope,
+  #     p_val = mean(abs(slope_perm) >= abs(real_slope), na.rm = TRUE)
+  #   )
+  # }
+  
   if (return_plot && mode == "window") {
-    # Single plot for one window
     p <- out$summary$p_val[1]
     out$plot <- ggplot(out$permutations, aes(x = estimate)) +
       geom_histogram(fill = "gray80", color = "black", bins = 30) +
@@ -405,7 +462,6 @@ DiD_ri <- function(df, # Input dataframe
       theme_minimal(base_size = 14)
     
   } else if (return_plot && mode == "daily") {
-
     plot_df <- out$permutations %>%
       left_join(out$summary %>% rename(true_effect = estimate), by = "label") %>%
       mutate(label_with_p = paste0(label, " (p = ", formatC(p_val, digits = 2, format = "f"), ")"))
@@ -426,253 +482,51 @@ DiD_ri <- function(df, # Input dataframe
   return(out)
 }
 
-# Might flag beach closures on 8/3 that seem to have a negative impact on visitation
-
-DiD_ri(df = df, al_treat_groups = al_treat_groups,
-       mode = "daily", dates = seq(as.Date("2024-07-09"), as.Date("2024-08-05"), by = "day"),
-       model_formula = visitorhours ~ treat_post | id + date,
-       perm_unit = "spatial_cluster", n_perm = 100, treated_city = "Nantucket", seed = 123, return_plot = TRUE)
-
-DiD_ri(df = df, al_treat_groups = al_treat_groups,
-       mode = "daily", dates = seq(as.Date("2024-07-09"), as.Date("2024-08-05"), by = "day"),
+DiD_ri(df = df, al_treat_groups = al_treat_groups, # Note beach closures on 8/3 that seem to have a negative impact on visitation
+       mode = "daily", dates = seq(as.Date("2024-07-09"), as.Date("2024-08-05"), by = "day"), date_range = as.Date(c("2024-06-15", "2024-08-15")),
        model_formula = visits ~ treat_post | id + date,
        perm_unit = "spatial_cluster", n_perm = 100, treated_city = "Nantucket", seed = 123, return_plot = TRUE)
 
-out<-DiD_ri(df = df, al_treat_groups = al_treat_groups,
-       mode = "window", dates = as.Date(c("2024-07-16", "2024-07-17")),
+outv<-DiD_ri(df = df, al_treat_groups = al_treat_groups,
+       mode = "window", dates = as.Date(c("2024-07-16", "2024-07-17")), date_range = as.Date(c("2024-06-15", "2024-07-30")),
        model_formula = visits ~ treat_post | id + date,
-       perm_unit = "spatial_cluster", n_perm = 100, treated_city = "Nantucket", seed = 123, return_plot = TRUE)
+       perm_unit = "spatial_cluster", n_perm = 500, treated_city = "Nantucket", seed = 123, return_plot = TRUE)
 
+total_effectv<-round(as.numeric(outv$summary$estimate)*2*length(unique(df %>% filter(City == "Nantucket") %>% pull(id)))*cf*cvf,0)
 
-total_effect<-round(as.numeric(out$summary$estimate)*2*length(unique(df %>% filter(City == "Nantucket") %>% pull(id)))*cf*cvf,0)
+outvh<-DiD_ri(df = df, al_treat_groups = al_treat_groups,
+             mode = "window", dates = as.Date(c("2024-07-16", "2024-07-17")), date_range = as.Date(c("2024-06-15", "2024-07-30")),
+             model_formula = visitorhours ~ treat_post | id + date,
+             perm_unit = "spatial_cluster", n_perm = 500, treated_city = "Nantucket", seed = 123, return_plot = TRUE)
 
-# # # Average impact 7-16 to 7-31 (normalized cell visit counts, by annual mean)
-# dfavgr <- df %>%
-#   filter(date >= as.Date("2023-06-15") & date < as.Date("2024-07-23")) %>% # Avoids contamination that began in LC and Westport starting 8/1
-#   mutate(
-#     year = as.character(year),  # Temporarily convert to character for group_by
-#     date = as.Date(date),
-#     post = date >= as.Date("2024-07-16"),
-#     treated = City == "Nantucket",
-#     treat_post = post * treated,
-#     temp_bin = factor(cut(tempmaxF, breaks = c(60, 70, 80, 90, 100), right = TRUE)),
-#     day_of_week = weekdays(date)
-#   ) %>%
-#   group_by(id, year) %>%
-#   mutate(
-#     baseline_mean = mean(visits[date < as.Date("2024-07-16")], na.rm = TRUE),
-#     visits_rel = visits / baseline_mean
-#   ) %>%
-#   ungroup()
-# 
-# dfavgr <- dfavgr %>%
-#   mutate(
-#     id = factor(id),
-#     year = factor(year),
-#     dayofmonth = factor(dayofmonth),
-#     day_of_week = factor(day_of_week)
-#   ) %>%
-#   filter(is.finite(visits_rel))  # Drop if baseline_mean was 0 or NA
-# 
-# model <- feols(
-#   visits_rel ~ treat_post + temp_bin + precIn | id + dayofmonth + day_of_week + year,
-#   data = dfavgr,
-#   vcov = cluster ~ id
-# )
-# 
-# summary(model)
-# 
-# print(bt_result<-boottest(model, param = "treat_post", clustid = "City", B = 9999,type = "webb"))
+total_effectvh<-round(as.numeric(outvh$summary$estimate)*2*length(unique(df %>% filter(City == "Nantucket") %>% pull(id)))*cf*cvhf,0)
 
-# Event study with discrete bins of days for pre-post 
-nbins<-1 # Number of days binned together
-df_esn <- df %>%
-  filter(date >= as.Date("2024-07-01") & date < as.Date("2024-08-01")) %>% 
-  mutate(
-    rel_day = as.integer(date - as.Date("2024-07-16")),
-    event_bin = floor(rel_day / nbins),  # numeric for clean ordering
-    treated = City == "Nantucket",
-    temp_bin = factor(cut(tempmaxF, breaks = c(60, 70, 80, 90, 100), right = TRUE)),
-    day_of_week = weekdays(date)
-  )
-
-model_esn <- feols(
-  visits ~ i(event_bin, treated, ref = -1) + temp_bin + precIn | id + dayofmonth + day_of_week,
-  data = df_esn,
-  cluster = ~City
-)
-
-tidy_esn <- tibble::tibble(
-  term = names(coef(model_esn)),
-  estimate = unname(coef(model_esn)),
-  conf.low = confint(model_esn)[, 1],
-  conf.high = confint(model_esn)[, 2]
-) %>%
-  filter(grepl("^event_bin::[-0-9]+:treated$", term)) %>%
-  mutate(
-    bin = as.numeric(gsub("^event_bin::([-0-9]+):treated$", "\\1", term))
-  ) %>%
-  arrange(bin)
-
-ggplot(tidy_esn, aes(x = bin, y = estimate)) +
-  geom_point() +
-  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.2) +
-  geom_hline(yintercept = 0, linetype = "solid", color = "gray40") +
-  geom_vline(xintercept = 0, linetype = "dashed", color = "gray40") +
-  labs(
-    x = paste0(nbins,"-day bins (relative to event)"),
-    y = "Effect on visits",
-    title = paste0("Event Study:",nbins,"-Day Bins (Nantucket Treatment)")
-  ) +
-  theme_minimal()
-
-# Event study with all pre-event days binned together, and post binned flexibly into n days
-nbins <- 3  # Number of days binned together
-
-df_esn <- df %>%
-  filter(date >= as.Date("2024-07-01") & date < as.Date("2024-08-01")) %>% 
-  mutate(
-    rel_day = as.integer(date - as.Date("2024-07-16")),
-    event_bin = case_when(
-      rel_day < 0 ~ "pre",
-      TRUE ~ as.character(floor(rel_day / nbins))
-    ),
-    treated = City == "Nantucket",
-    temp_bin = factor(cut(tempmaxF, breaks = c(60, 70, 80, 90, 100), right = TRUE)),
-    day_of_week = weekdays(date)
-  )
-
-df_esn <- df_esn %>%
-  mutate(
-    id = factor(id),
-    dayofmonth = factor(dayofmonth),
-    day_of_week = factor(day_of_week)
-  )
-
-model_esn <- feols(
-  visits ~ i(event_bin, treated, ref = "pre") + temp_bin + precIn | id + dayofmonth + day_of_week,
-  data = df_esn,
-  cluster = ~id
-)
-
-print(bt_result<-boottest(model_esn, param = "event_bin::2:treated", clustid = "id", B = 9999,type = "webb"))
-
-tidy_esn <- tibble::tibble(
-  term = names(coef(model_esn)),
-  estimate = unname(coef(model_esn)),
-  conf.low = confint(model_esn)[, 1],
-  conf.high = confint(model_esn)[, 2]
-) %>%
-  filter(grepl("^event_bin::.*:treated$", term)) %>%
-  mutate(
-    bin = as.numeric(gsub("^event_bin::(.*):treated$", "\\1", term))
-  ) %>%
-  arrange(bin)
-
-ggplot(tidy_esn, aes(x = bin, y = estimate)) +
-  geom_point() +
-  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.2) +
-  geom_hline(yintercept = 0, linetype = "solid", color = "gray40") +
-  geom_vline(xintercept = 0, linetype = "dashed", color = "gray40") +
-  labs(
-    x = paste0(nbins, "-day bins (relative to event)"),
-    y = "Effect on visits",
-    title = paste0("Event Study: ", nbins, "-Day Bins (Nantucket Treatment)")
-  ) +
-  theme_minimal()
+# DiD_ri(df = df %>% filter(!is.na(hourspervisit)), al_treat_groups = al_treat_groups, # Hours per visit did not appear to change on the pollution date and shortly thereafter
+#        mode = "daily", dates = seq(as.Date("2024-07-09"), as.Date("2024-07-29"), by = "day"), date_range = as.Date(c("2024-06-15", "2024-07-30")),
+#        model_formula = hourspervisit ~ treat_post | id + date,
+#        perm_unit = "spatial_cluster", n_perm = 100, treated_city = "Nantucket", seed = 123, return_plot = TRUE)
 
 
 # Robustness tests --------------------------------------------------------
-# Pre-trends
-pre_df <- df %>%
-  filter(
-    (format(date, "%m-%d") >= "07-01" & format(date, "%m-%d") <= "07-15" & year %in% c(2023, 2024)) |
-      (format(date, "%m-%d") >= "07-16" & format(date, "%m-%d") <= "07-31" & year == 2023)
-  ) %>%
-  mutate(
-    time1 = as.numeric(date - min(date) + 1),  # Start counter at 1
-    time2 = as.integer(format(date, "%d"))     # For plotting
-  )
+# Event study daily pre-trends (note date_range is automatically constrained by min(dates) in the pre-trend analysis using "window" mode)
+ptoutvd<-DiD_ri(df = df, al_treat_groups = al_treat_groups, # Note beach closures on 8/3 that seem to have a negative impact on visitation
+               mode = "daily", dates = seq(as.Date("2024-06-15"), as.Date("2024-07-15"), by = "day"), date_range = as.Date(c("2024-06-15", "2024-07-15")), 
+               model_formula = visits ~ treat_post | id + date,
+               perm_unit = "spatial_cluster", n_perm = 500, treated_city = "Nantucket", seed = 123, return_plot = TRUE, test_pretrends = FALSE)
 
-pretrend_model <- feols(
-  visits ~ time1 + treated:time1 + temp_bin + precIn | day_of_week + dayofmonth + year,
-  data = pre_df,
-  vcov = "hetero"
-)
+ptoutvd$summary %>% filter(as.Date(label) < as.Date("2024-07-16")) %>% print(n = nrow(.)) # Daily treatment impacts for days in the pre-period 
 
-summary(pretrend_model)
+# Placebo pre-treatment treatment window
+ptoutvp<-DiD_ri(df = df, al_treat_groups = al_treat_groups, 
+                mode = "window", dates = as.Date(c("2024-07-14", "2024-07-15")), date_range = as.Date(c("2024-06-15", "2024-07-30")), 
+                model_formula = visits ~ treat_post | id + date,
+                perm_unit = "spatial_cluster", n_perm = 500, treated_city = "Nantucket", seed = 123, return_plot = TRUE, test_pretrends = FALSE)
+ptoutvp$plot
 
-# ggplot(df %>% filter(post == FALSE), aes(x = date, y = visits, color = source)) + # Plot of raw visits
-#   geom_line() +
-#   facet_wrap(~ year, scales = "free_x") +
-#   labs(
-#     x = "Date",
-#     y = "Visits",
-#     color = "Beach",
-#     title = "Pre-Treatment trends by location and year"
-#   ) +
-#   theme_minimal()
-
-pre_df$fitted <- predict(pretrend_model)
-
-ggplot(pre_df %>% filter(source != "Block Island"), aes(x = time2, y = fitted, color = treated)) +
-  geom_line(size = 1.2) +
-  facet_wrap(~ year, scales = "free_x") +
-  labs(x = "Time", y = "Covariate-adjusted visits", color = "Treated") +
-  theme_minimal()
-
-# Placebo test
-placebo_df <- df %>%
-  filter(format(date, "%Y") == "2023" & format(date, "%m") == "07") %>%
-  mutate(
-    placebo_post = date >= as.Date("2023-07-16"),  # fake treatment date
-    placebo_treat_post = placebo_post * treated
-  )
-
-placebo_model <- feols(
-  visits ~ placebo_treat_post + temp_bin + precIn |
-    source + dayofmonth + day_of_week,
-  data = placebo_df,
-  vcov = "hetero"
-)
-
-summary(placebo_model)
-
-# Drop controls
-df_wo_LCW <- df %>% filter(source != "Little Compton and Westport")
-
-model_wo_LCW <- feols(
-  visits ~ treat_post + temp_bin + precIn |
-    source + dayofmonth + day_of_week + year,
-  data = df_wo_LCW,
-  vcov = "hetero"
-)
-
-summary(model_wo_LCW)
-
-df_wo_BI <- df %>% filter(source != "Block Island")
-
-model_wo_BI <- feols(
-  visits ~ treat_post + temp_bin + precIn |
-    source + dayofmonth + day_of_week + year,
-  data = df_wo_BI,
-  vcov = "hetero"
-)
-
-summary(model_wo_BI)
-
-
-# Displacement
-
-# dfs<-dfs %>% # Old code, needs updating
-#   left_join(
-#     dfs %>%
-#       filter(is.na(FEATUREID)) %>% 
-#       distinct(DEVICEID, source) %>%
-#       group_by(DEVICEID) %>%
-#       summarise(groups_seen_in = paste(sort(unique(source)), collapse = ", "), .groups = "drop"),
-#     by = "DEVICEID"
-#   )
-# 
-# dfs %>% filter(is.na(FEATUREID)) %>% count(groups_seen_in) # Summary of overlap in devices across areas
+# Time interaction for parallel trends
+ptoutvpt<-DiD_ri(df = df, al_treat_groups = al_treat_groups, 
+                mode = "window", dates = as.Date(c("2024-07-16", "2024-07-17")), date_range = as.Date(c("2024-06-15", "2024-07-30")), 
+                model_formula = visits ~ treat_post | id + date,
+                perm_unit = "spatial_cluster", n_perm = 500, treated_city = "Nantucket", seed = 123, return_plot = TRUE, test_pretrends = TRUE)
+ptoutvpt
 
