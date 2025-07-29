@@ -434,6 +434,17 @@ DiD_ri <- function(df, # Input dataframe
       estimate = real_slope,
       p_val = mean(abs(slope_perm) >= abs(real_slope), na.rm = TRUE)
     )
+    
+    out$pretrend_plot <- ggplot(data.frame(estimate = slope_perm), aes(x = estimate)) +
+      geom_histogram(fill = "gray80", color = "black", bins = 30) +
+      geom_vline(xintercept = real_slope, color = "red", linetype = "dashed", size = 1.2) +
+      labs(
+        title = "Permutation Distribution of Placebo Pretrend Slopes",
+        subtitle = paste("Observed slope shown in red | p-value =", formatC(out$pretrend_slope$p_val, digits = 2, format = "f")),
+        x = "Estimated Pretrend Slope",
+        y = "Frequency"
+      ) +
+      theme_minimal(base_size = 14)
   }
   
   
@@ -519,3 +530,4 @@ ptoutvpt<-DiD_ri(df = df, al_treat_groups = al_treat_groups,
                 perm_unit = "spatial_cluster", n_perm = 500, treated_city = "Nantucket", seed = 123, return_plot = TRUE, 
                 pretrend_formula = visits ~ time + treated:time | id)
 ptoutvpt$pretrend_slope
+ptoutvpt$pretrend_plot
