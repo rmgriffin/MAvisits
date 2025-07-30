@@ -35,6 +35,7 @@ options(scipen = 999) # Prevent scientific notation
 # Load data into workspace ---------------------------------------------------
 nt<-st_transform(st_read("Data/GSNantucketSBeaches.gpkg"), crs = 4326) %>% select(!Affected) # AOI for Nantucket from satellite imagery, projected in 4326 to work with conventions of the API
 dg<-st_transform(st_read("Data/nantucket_terminal_osm_extracted.gpkg"), crs = 4326) %>% dplyr::filter(name == "Nantucket Terminal 2")
+dgnt<-st_transform(st_read("Data/MAmunicipalities.gpkg"), crs = 4326) %>% dplyr::filter(TOWN == "NANTUCKET") %>% rename(City = TOWN) %>% dplyr::select(City) %>% mutate(City = "Nantucket")
 lcw<-st_transform(st_read("Data/LCWestport.gpkg"), crs = 4326) # AOI for Little Compton and Westport from satellite imagery
 bi<-st_transform(st_read("Data/BlockIsland.gpkg"), crs = 4326) # AOI for Block Island from satellite imagery
 ai<-st_transform(st_read("Data/AquidneckIsland.gpkg"), crs = 4326) # AOI for Aquidneck Island from satellite imagery
@@ -47,6 +48,7 @@ al$id<-seq(1,nrow(al),1) # API requires a variable named "id" to pass through th
 al<-st_simplify(st_make_valid(al),dTolerance = 0.00001)
 
 dg$id<-seq(1,nrow(dg),1)
+dgnt$id<-seq(1,nrow(dgnt),1)
 
 rm(ai,bi,jw,lcw,mv,nt)
 
@@ -183,6 +185,11 @@ tradeapi<-function(dft,s,e,fpath,fname_prefix = "batch_"){ # Function converts s
   fname<-paste0(fname_prefix, dft_name, "_", paste0(unique(dft$id), collapse = "_"))
   write_parquet(xp, paste0(fpath,fname,".parquet")) # Write to parquet file to save space, versus csv
 }
+
+# tradeapi(dft = dgnt,s = as.numeric(as.POSIXct("2022-08-01 00:00:00.000", tz = "America/New_York")) * 1000,
+#          e = as.numeric(as.POSIXct("2025-05-31 23:59:59.999", tz = "America/New_York")) * 1000, fpath = "tData/",fname_prefix = "dgnt")
+
+dgnt<-read_parquet("tData/dgntdgnt_1.parquet")
 
 # split_al<-split(al, ceiling(seq_len(nrow(al))/20)) # api returns 404 error if even one polygon in the batch has a problem
 # 
@@ -473,4 +480,4 @@ polapi<-function(ids,s,e,fpath,fname_prefix = "batch_"){
 
 dds<-map_df(list.files("tData/", pattern = "^batch_.*\\.parquet$", full.names = TRUE), read_parquet)
 
-rm(ids,api_key,url,riwmv,ntu,ntsn,mvu,dg,geosearchapi,polapi,tradeapi)
+rm(ids,api_key,url,dg,geosearchapi,polapi,tradeapi,headers)
