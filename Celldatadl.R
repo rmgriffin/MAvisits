@@ -189,7 +189,7 @@ tradeapi<-function(dft,s,e,fpath,fname_prefix = "batch_"){ # Function converts s
 # tradeapi(dft = dgnt,s = as.numeric(as.POSIXct("2022-08-01 00:00:00.000", tz = "America/New_York")) * 1000,
 #          e = as.numeric(as.POSIXct("2025-05-31 23:59:59.999", tz = "America/New_York")) * 1000, fpath = "tData/",fname_prefix = "dgnt")
 
-dgnt<-read_parquet("tData/dgntdgnt_1.parquet")
+dgnt<-read_parquet("tData/dgntdgnt_1.parquet") # Trade areas api request for all devices seen on Nantucket
 
 # split_al<-split(al, ceiling(seq_len(nrow(al))/20)) # api returns 404 error if even one polygon in the batch has a problem
 # 
