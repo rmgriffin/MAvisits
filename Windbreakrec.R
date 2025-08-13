@@ -4,13 +4,18 @@ rm(list=ls()) # Clears workspace
 # install.packages("renv") # Install/call libraries
 # renv::init()
 
-PKG<-c("googledrive","sf","tidyverse","httpuv","R.utils","httr","jsonlite","geojsonsf","lwgeom","furrr","arrow","stringr","sandwich","lmtest","fixest","digest","geosphere","broom","fwildclusterboot")
+remotes::install_github("bcallaway11/did")
+library(did) 
+
+PKG<-c("googledrive","sf","tidyverse","httpuv","R.utils","httr","jsonlite","geojsonsf","lwgeom","furrr","arrow","stringr","sandwich","lmtest","fixest","digest","geosphere","broom","fwildclusterboot","gmapsdistance")
 
 for (p in PKG) {
   if(!require(p,character.only = TRUE)) {  
     install.packages(p, type = "binary")
     require(p,character.only = TRUE)}
 }
+
+
 
 renv::snapshot()
 rm(p,PKG)
@@ -531,3 +536,208 @@ ptoutvpt<-DiD_ri(df = df, al_treat_groups = al_treat_groups,
                 pretrend_formula = visits ~ time + treated:time | id)
 ptoutvpt$pretrend_slope
 ptoutvpt$pretrend_plot
+
+
+# Staggered rollout model -------------------------------------------------
+ATTgt_rollout <- function(
+    df, adoption_map, date_range,
+    outcome   = "visits",
+    id_var    = "id",
+    time_var  = "date",
+    treat_unit_var = "City",
+    xformla  = ~ 1,                      # use ~1 (intercept); ~0 can break did internals
+    control_group = c("notyettreated","nevertreated"),
+    clustervars = NULL,
+    panel = TRUE,
+    allow_unbalanced_panel = TRUE,
+    anticipation = 0,
+    bstrap = FALSE, biters = 999,
+    k_keep = NULL,
+    windows = NULL,
+    compute_pooled_dynamic = TRUE,
+    return_plot = TRUE,
+    seed = 123
+){
+  set.seed(seed)
+  control_group <- match.arg(control_group)
+  if (!inherits(adoption_map, "Date")) adoption_map <- as.Date(adoption_map)
+  
+  df1 <- df %>%
+    dplyr::filter(.data[[time_var]] >= date_range[1], .data[[time_var]] <= date_range[2]) %>%
+    dplyr::mutate(date = as.Date(.data[[time_var]]))
+  
+  dates <- sort(unique(df1$date))
+  date_to_idx <- setNames(seq_along(dates), as.character(dates))
+  idx_to_date <- setNames(dates, seq_along(dates))
+  
+  adopt_vec <- setNames(as.Date(adoption_map), names(adoption_map))
+  g_idx_map  <- setNames(date_to_idx[as.character(adopt_vec)], names(adopt_vec))
+  
+  df2 <- df1 %>%
+    dplyr::mutate(
+      id_num = as.integer(factor(.data[[id_var]])),
+      t_idx  = as.integer(date_to_idx[as.character(date)]),
+      g_idx  = ifelse(.data[[treat_unit_var]] %in% names(g_idx_map),
+                      as.integer(g_idx_map[.data[[treat_unit_var]]]), 0L)
+    )
+  
+  if (is.null(clustervars)) clustervars <- treat_unit_var
+  
+  # ensure design matrix has ≥1 column
+  if (ncol(model.matrix(xformla, df2)) == 0L) xformla <- ~ 1
+  
+  keep_rows <- complete.cases(df2[[outcome]]) &
+    complete.cases(model.matrix(xformla, df2))
+  df3 <- df2[keep_rows, , drop = FALSE]
+  
+  # ---- Callaway & Sant’Anna (did) ----
+  att_obj <- did::att_gt(
+    yname  = outcome,
+    tname  = "t_idx",
+    idname = "id_num",
+    gname  = "g_idx",
+    xformla = xformla,
+    panel  = panel,
+    control_group = control_group,
+    clustervars = clustervars,
+    data   = df3,
+    bstrap = bstrap,
+    biters = biters,
+    allow_unbalanced_panel = allow_unbalanced_panel,
+    anticipation = anticipation
+  )
+  
+  # tidy (avoid name collision by using att_hat / se_hat)
+  gt <- tibble::tibble(
+    row_idx = seq_along(att_obj$att),
+    g_idx   = att_obj$group,
+    t_idx   = att_obj$t,
+    att_hat = as.numeric(att_obj$att),
+    se_hat  = as.numeric(att_obj$se)
+  ) %>%
+    dplyr::mutate(
+      cohort = as.Date(idx_to_date[as.character(g_idx)]),
+      time   = as.Date(idx_to_date[as.character(t_idx)]),
+      k      = as.integer(t_idx - g_idx),
+      ci_lo  = att_hat - 1.96*se_hat,
+      ci_hi  = att_hat + 1.96*se_hat
+    ) %>%
+    dplyr::arrange(cohort, k)
+  
+  if (!is.null(k_keep)) gt <- dplyr::filter(gt, k %in% k_keep)
+  
+  pooled_dynamic <- NULL
+  if (compute_pooled_dynamic) {
+    dyn <- did::aggte(att_obj, type = "dynamic")
+    pooled_dynamic <- tibble::tibble(
+      k = as.integer(dyn$egt),
+      att = as.numeric(dyn$att.egt),
+      se  = as.numeric(dyn$se.egt)
+    ) %>% dplyr::mutate(ci_lo = att - 1.96*se, ci_hi = att + 1.96*se)
+  }
+  
+  # windows (robust indexing)
+  window_est <- NULL
+  if (!is.null(windows)) {
+    V <- att_obj$V
+    nV <- if (is.null(V)) 0L else nrow(V)
+    
+    window_est <- purrr::imap_dfr(windows, function(ks, cohort_chr){
+      idx_gt <- which(gt$cohort == as.Date(cohort_chr) & gt$k %in% as.integer(ks))
+      if (!length(idx_gt)) {
+        return(tibble::tibble(cohort = as.Date(cohort_chr), k_window = paste(ks, collapse=","),
+                              estimate = NA_real_, se = NA_real_,
+                              ci_lo = NA_real_, ci_hi = NA_real_, p = NA_real_))
+      }
+      rows <- gt$row_idx[idx_gt]
+      ok <- !is.na(rows) & rows >= 1L & (nV == 0L | rows <= nV)
+      rows <- rows[ok]; idx_gt <- idx_gt[ok]
+      if (!length(rows)) {
+        return(tibble::tibble(cohort = as.Date(cohort_chr), k_window = paste(ks, collapse=","),
+                              estimate = NA_real_, se = NA_real_,
+                              ci_lo = NA_real_, ci_hi = NA_real_, p = NA_real_))
+      }
+      L <- rep(1/length(rows), length(rows))
+      est <- sum(L * gt$att_hat[idx_gt])
+      if (!is.null(V)) {
+        var <- tryCatch(as.numeric(t(L) %*% V[rows, rows, drop = FALSE] %*% L),
+                        error = function(e) sum((L^2) * diag(V)[rows], na.rm = TRUE))
+      } else var <- NA_real_
+      se  <- sqrt(var)
+      tibble::tibble(
+        cohort = as.Date(cohort_chr),
+        k_window = paste(ks, collapse=","),
+        estimate = est,
+        se = se,
+        ci_lo = if (is.finite(se)) est - 1.96*se else NA_real_,
+        ci_hi = if (is.finite(se)) est + 1.96*se else NA_real_,
+        p = if (is.finite(se) && se > 0) 2*pnorm(-abs(est/se)) else NA_real_
+      )
+    })
+  }
+  
+  plot_obj <- NULL
+  if (return_plot) {
+    plot_obj <- ggplot2::ggplot(gt, ggplot2::aes(k, att_hat)) +
+      ggplot2::geom_hline(yintercept = 0, linewidth = 0.4, alpha = .6) +
+      ggplot2::geom_vline(xintercept = -1, linetype = 3, alpha = .6) +
+      ggplot2::geom_ribbon(ggplot2::aes(ymin = ci_lo, ymax = ci_hi), alpha = .15) +
+      ggplot2::geom_line() + ggplot2::geom_point(size = 1.2) +
+      ggplot2::facet_wrap(~ cohort, scales = "free_y") +
+      ggplot2::labs(title = "Cohort-specific event time ATT (Callaway–Sant’Anna)",
+                    x = "Event time k = t_idx − g_idx", y = "ATT(g,t) with 95% CI") +
+      ggplot2::theme_minimal(base_size = 12)
+  }
+  
+  list(att_object = att_obj, gt = gt, windows = window_est,
+       pooled_dynamic = pooled_dynamic, plot = plot_obj,
+       mapping = list(date_to_idx = date_to_idx, idx_to_date = idx_to_date))
+}
+
+adoption_map <- c(
+  "Nantucket"      = "2024-07-16",
+  "Oak Bluffs"     = "2024-07-31",
+  "Aquinnah"       = "2024-07-31",
+  "Edgartown"      = "2024-07-31",
+  "Chilmark"       = "2024-07-31",
+  "Tisbury"        = "2024-07-31",
+  "West Tisbury"   = "2024-07-31",
+  "Westport"       = "2024-07-31",
+  "Little Compton" = "2024-07-31"
+)
+
+res <- ATTgt_rollout(
+  df = df,
+  adoption_map = adoption_map,
+  date_range = as.Date(c("2024-06-15","2024-08-15")),
+  outcome = "visits",
+  id_var = "id",
+  time_var = "date",
+  treat_unit_var = "City",
+  xformla = ~ 1,                     # or ~ tempmaxF + precIn
+  control_group = "notyettreated",
+  clustervars = "City",
+  anticipation = 0,
+  bstrap = FALSE,
+  k_keep = -10:10,
+  windows = list("2024-07-16" = 0:1, "2024-07-31" = 0:0),
+  #windows = NULL,
+  compute_pooled_dynamic = TRUE,
+  return_plot = TRUE
+)
+
+res$gt %>% print(n=Inf)
+res$windows
+res$pooled_dynamic
+res$att_object
+res$plot
+res$mapping
+
+
+# Travel cost model -------------------------------------------------------
+dfs %>% filter(City == "Nantucket" & year == 2024 & CENSUS_BLOCK_GROUP_ID != "NULL") %>% distinct(CENSUS_BLOCK_GROUP_ID,id) %>% nrow() # Unique A to B pairs for dist calc
+
+# Setting up API key for access to google distance matrix api
+api_key<-read.csv(file = "GDMapikey.csv", header = FALSE)
+set.api.key(api_key$V1)
+
