@@ -265,7 +265,7 @@ df<-df %>% mutate(date = as.Date(DAY_IN_FEATURE),
   select(!DAY_IN_FEATURE) %>%
   left_join(wth, by = c("date","station"))
 
-al_treat_groups<-al %>% filter(id %in% unique(df$id) & City != "Nantucket") # Unique groups of non-treated beaches based on 23km clustering of Nantucket pollution
+al_treat_groups<-al %>% filter(id %in% unique(df$id) & City != "Nantucket") # Unique groups of non-treated high-visitation beaches based on 23km clustering of Nantucket pollution
 
 dist_matrix<-matrix(as.numeric(st_distance(st_transform(al_treat_groups, 26919))), nrow = nrow(al_treat_groups))
 
@@ -538,7 +538,22 @@ ptoutvpt$pretrend_slope
 ptoutvpt$pretrend_plot
 
 
+
+
 # Staggered rollout model -------------------------------------------------
+al_treat_groups2<-al %>% filter(id %in% unique(df$id)) # Unique groups of high-visitation beaches based on 23km clustering of Nantucket pollution
+
+dist_matrix<-matrix(as.numeric(st_distance(st_transform(al_treat_groups2, 26919))), nrow = nrow(al_treat_groups2))
+
+al_treat_groups2<-al_treat_groups2 %>% mutate(group = map(seq_len(n()), ~ al_treat_groups2$id[which(dist_matrix[.x, ] <= 23000)])) # Identifying groups of beaches within 23km of each other
+
+al_treat_groups2 %>% 
+  mutate(group_str = map_chr(seq_along(group), ~ paste0(sort(group[[.x]]), collapse = "-"))) %>% 
+  count(group_str, name = "group_frequency") %>% 
+  arrange(desc(group_frequency)) %>% 
+  st_drop_geometry()
+
+
 ATTgt_rollout <- function(
     df, adoption_map, date_range,
     outcome   = "visits",
@@ -718,7 +733,7 @@ res <- ATTgt_rollout(
   control_group = "notyettreated",
   clustervars = "City",
   anticipation = 0,
-  bstrap = FALSE,
+  bstrap = TRUE, biters = 999,
   k_keep = -10:10,
   windows = list("2024-07-16" = 0:1, "2024-07-31" = 0:0),
   #windows = NULL,
