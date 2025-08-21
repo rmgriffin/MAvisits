@@ -284,20 +284,26 @@ rm(wth,full_grid,valid_dates,meta)
 
 # DiD visitation model, Nantucket main impact --------------------------------------------------------
 DiD_ri <- function(df, # Input dataframe
-                   al_treat_groups, # Potential groups of affected beaches for randomization inference
+                   al_treat_groups, # Potential groups of affected beaches for randomization inference, only used if perm_unit == "spatial_cluster"
                    mode = c("window", "daily"), # Estimate treatment effect for a window of time, or a series of days
                    dates, # Treatment window dates for "daily" (seq(as.Date("2024-07-15"), as.Date("2024-07-31"), by = "day")) or "window" (as.Date(c("2024-07-16", "2024-07-27")))
                    model_formula, # Formula for model written as FEOLS model 
-                   perm_unit = "spatial_cluster", # Choice of grouping for randomization permutation. Options {"spatial_cluster", "City", "id"}
+                   perm_unit = "spatial_cluster", # Choice of grouping for randomization permutation. Options {"spatial_cluster", "id"}
                    n_perm = 1000, # Number of permutations for randomization inference
-                   treated_city = "Nantucket", # City name for treated beaches
+                   treated_ids, # Ids for treated beaches
                    return_plot = FALSE, # Return plot of permutation distribution and treatment effect
                    date_range, # Time range over which observations are included in regression, formatted as: as.Date(c("2024-06-15", "2024-08-15"))
-                   pretrend_formula = NULL, # Formula for pre-trend model written as FEOLS model. Returns test of parallel pre-trends for period before "dates" using permutation inference (grouping specified via perm_unit)
+                   pretrend_formula = NULL, # Formula for pre-trend model written as FEOLS model (visits ~ time + time:placebo | id). Returns test of parallel pre-trends for period before "dates" using permutation inference (grouping specified via perm_unit)
                    seed = 123) { # Seed for randomization
   
   mode <- match.arg(mode)
+  perm_unit <- match.arg(perm_unit)
   set.seed(seed)
+  
+  if (missing(treated_ids) || is.null(treated_ids) || length(treated_ids) == 0)
+    stop("Please pass a non-empty vector 'treated_ids' (treatment is defined only by ids).")
+  
+  mf_str <- paste(deparse(model_formula), collapse = "")
   
   results <- list()
   all_permutations <- list()
@@ -315,24 +321,20 @@ DiD_ri <- function(df, # Input dataframe
     date_label <- label_list[i]
     
     dfavg <- df %>%
-      filter(date >= date_range[1] & date <= date_range[2]) %>% # 2024-07-31 avoids contamination that began in LC and Westport starting 8/1
+      filter(date >= date_range[1] & date <= date_range[2]) %>%
       mutate(
-        post = if (mode == "window") {
-          date >= current_date[1] & date <= current_date[length(current_date)]
-        } else {
-          date == current_date
-        },
-        treated = City == treated_city,
+        post = if (mode == "window") date >= current_date[1] & date <= current_date[length(current_date)] else date == current_date,
+        id = factor(id),
+        treated = as.character(id) %in% as.character(treated_ids),
         treat_post = post * treated,
         temp_bin = factor(cut(tempmaxF, breaks = c(60, 70, 80, 90, 100), right = TRUE)),
         day_of_week = factor(weekdays(date)),
-        id = factor(id),
         dayofmonth = factor(dayofmonth)
       )
     
     model <- feols(model_formula, data = dfavg) # Fit original model
     # print(bt_result<-boottest(model, param = "treat_post", clustid = "City", B = 9999,type = "webb")) Wild clustered standard errors for treatment effect
-    point_estimate <- coef(model)["treat_post"]
+    point_estimate <- tryCatch(stats::coef(model)[["treat_post"]], error = function(e) NA_real_)
     
     if (perm_unit == "spatial_cluster") { # Identify permutation units
       valid_placebo_clusters <- al_treat_groups %>%
@@ -340,58 +342,50 @@ DiD_ri <- function(df, # Input dataframe
         distinct(group_str, group)
       n_treated <- 1
     } else {
-      if (!perm_unit %in% c("id", "City")) {
-        stop(glue::glue("perm_unit '{perm_unit}' is not an acceptable unit of permutation"))
-      }
-      n_treated <- dfavg %>% filter(treated) %>% distinct(.data[[perm_unit]]) %>% nrow()
-      controls <- dfavg %>% filter(!treated) %>% distinct(.data[[perm_unit]]) %>% pull()
+      n_treated <- dfavg %>% filter(treated) %>% distinct(id) %>% nrow()
+      controls <- dfavg %>% filter(!treated) %>% distinct(id) %>% pull() %>% as.character()
     }
     
-    # Prepare model formula strings
-    model_str <- paste(deparse(model_formula), collapse = "")
-    parts <- strsplit(model_str, "\\|", fixed = TRUE)[[1]]
+    # Prepare placebo model formula strings
+    parts <- strsplit(mf_str, "\\|", fixed = FALSE)[[1]]
     rhs_formula <- trimws(parts[1])
-    fe_formula <- if (length(parts) > 1) trimws(parts[2]) else NULL
-    
+    fe_formula  <- if (length(parts) > 1) trimws(parts[2]) else NULL
     rhs_placebo <- gsub("\\btreat_post\\b", "placebo_treat_post", rhs_formula)
-    placebo_str <- if (!is.null(fe_formula)) {
-      paste(rhs_placebo, "|", fe_formula)
-    } else {
-      rhs_placebo
-    }
-    
+    placebo_str <- if (!is.null(fe_formula)) paste(rhs_placebo, "|", fe_formula) else rhs_placebo
     perm_estimates <- numeric(n_perm)
+    
     for (j in 1:n_perm) { # Permutation loop
       dfavg_perm <- if (perm_unit == "spatial_cluster") {
         placebo_cluster_ids <- sample(valid_placebo_clusters$group, size = 1)[[1]]
         dfavg %>%
           mutate(
             placebo_treated = id %in% placebo_cluster_ids,
-            placebo_treat_post = placebo_treated * post
+            placebo_treat_post = as.integer(post) * as.integer(placebo_treated)
           )
       } else {
-        placebo <- sample(controls, size = n_treated, replace = FALSE)
+        if (length(controls) < n_treated) { perm_estimates[j] <- NA_real_; next }
+        placebo_ids <- sample(controls, size = n_treated, replace = FALSE)
         dfavg %>%
           mutate(
-            placebo_treated = .data[[perm_unit]] %in% placebo,
-            placebo_treat_post = placebo_treated * post
+            placebo_treated    = as.character(id) %in% as.character(placebo_ids),
+            placebo_treat_post = as.integer(post) * as.integer(placebo_treated)
           )
       }
       
-      mod_perm <- feols(as.formula(placebo_str), data = dfavg_perm)
-      perm_estimates[j] <- tryCatch(coef(mod_perm)["placebo_treat_post"], error = function(e) NA)
+      mod_perm <- tryCatch(
+        fixest::feols(stats::as.formula(placebo_str), data = dfavg_perm),
+        error = function(e) NULL
+      )
+      perm_estimates[j] <- if (!is.null(mod_perm)) {
+        tryCatch(stats::coef(mod_perm)[["placebo_treat_post"]], error = function(e) NA_real_)
+      } else NA_real_
     }
     
     p_val <- mean(abs(perm_estimates) >= abs(point_estimate), na.rm = TRUE)
     
-    results[[i]] <- tibble(
-      label = date_label,
-      estimate = point_estimate,
-      p_val = p_val
-    )
+    results[[i]] <- tibble(label = date_label, estimate = point_estimate, p_val = p_val)
     
-    perm_df <- tibble(label = date_label, estimate = perm_estimates)
-    all_permutations[[i]] <- perm_df
+    all_permutations[[i]] <- tibble(label = date_label, estimate = perm_estimates)
   }
   
   out <- list(
@@ -399,40 +393,59 @@ DiD_ri <- function(df, # Input dataframe
     permutations = bind_rows(all_permutations)
   )
   
+  # Optional pre-trend test
   if (!is.null(pretrend_formula) && mode == "window") {
     pre_df <- df %>%
       filter(date < min(dates)) %>%
       mutate(
         time = as.integer(date - min(date)),
-        treated = City == treated_city,
         temp_bin = factor(cut(tempmaxF, breaks = c(60, 70, 80, 90, 100), right = TRUE)),
         day_of_week = factor(weekdays(date)),
         id = factor(id),
-        dayofmonth = factor(dayofmonth)
+        dayofmonth = factor(dayofmonth),
+        treated = as.character(id) %in% as.character(treated_ids)
       )
     
     pre_model <- feols(pretrend_formula, data = pre_df)
     coef_names <- names(coef(pre_model))
-    real_idx <- grep("^time:treated|^treated:time", coef_names)
+    real_idx <- grep("[:.]treated", coef_names) 
+    # real_idx <- grep("^time:treated|^treated:time", coef_names)
     real_slope <- if (length(real_idx) == 1) coef(pre_model)[real_idx] else NA_real_
     
+    
+    pf_str <- paste(deparse(pretrend_formula), collapse = "") # Build placebo pretrend formula by replacing 'treated' -> 'placebo' in the RHS part only
+    pf_parts <- strsplit(pf_str, "\\|")[[1]]
+    pf_main  <- trimws(pf_parts[1])  # LHS ~ RHS
+    pf_fe    <- if (length(pf_parts) > 1) paste0("|", trimws(pf_parts[2])) else ""
+    
+    lhs_rhs <- strsplit(pf_main, "~")[[1]] # replace treated -> placebo in RHS of the main part
+    lhs_pt  <- lhs_rhs[1]
+    rhs_pt  <- gsub("\\btreated\\b", "placebo", lhs_rhs[2])
+    placebo_pretrend_str <- paste0(lhs_pt, "~", rhs_pt, if (pf_fe != "") paste0(" ", pf_fe) else "")
+    
+    n_treated_pre <- pre_df %>% dplyr::filter(treated) %>% dplyr::distinct(id) %>% nrow()
+
     slope_perm <- replicate(n_perm, {
       pre_df_perm <- if (perm_unit == "spatial_cluster") {
+        if (nrow(al_treat_groups) < 1) return(NA_real_)
         placebo_cluster_ids <- sample(al_treat_groups$group, size = 1)[[1]]
         pre_df %>% mutate(placebo = id %in% placebo_cluster_ids)
-      } else {
-        placebo_ids <- sample(unique(pre_df[[perm_unit]]), size = n_treated, replace = FALSE)
-        pre_df %>% mutate(placebo = .data[[perm_unit]] %in% placebo_ids)
+      } else { # id
+        all_ids_pre <- pre_df %>% distinct(id) %>% pull() %>% as.character()
+        if (length(all_ids_pre) < n_treated_pre) return(NA_real_)
+        placebo_ids <- sample(all_ids_pre, size = n_treated_pre, replace = FALSE)
+        pre_df %>% mutate(placebo = as.character(id) %in% placebo_ids)
       }
       
-      placebo_formula <- visits ~ time + time:placebo | id
+      #placebo_formula <- visits ~ time + time:placebo | id
       
-      mod <- tryCatch(feols(placebo_formula, data = pre_df_perm), error = function(e) NULL)
-      if (!is.null(mod)) {
-        tryCatch(coef(mod)[["time:placeboTRUE"]], error = function(e) NA_real_)
-      } else {
-        NA_real_
-      }
+      mod <- tryCatch(fixest::feols(stats::as.formula(placebo_pretrend_str), data = pre_df_perm), error = function(e) NULL)
+      if (is.null(mod)) return(NA_real_)
+      
+      # pick the coefficient that involves ':placebo'
+      nm <- names(stats::coef(mod))
+      idx <- grep("[:.]placebo", nm)
+      if (length(idx) >= 1) as.numeric(stats::coef(mod)[idx[1]]) else NA_real_
     })
     
     out$pretrend_slope <- tibble(
@@ -442,12 +455,11 @@ DiD_ri <- function(df, # Input dataframe
     
     out$pretrend_plot <- ggplot(data.frame(estimate = slope_perm), aes(x = estimate)) +
       geom_histogram(fill = "gray80", color = "black", bins = 30) +
-      geom_vline(xintercept = real_slope, color = "red", linetype = "dashed", size = 1.2) +
+      geom_vline(xintercept = real_slope, color = "red", linetype = "dashed", linewidth = 1.2) +
       labs(
         title = "Permutation Distribution of Placebo Pretrend Slopes",
         subtitle = paste("Observed slope shown in red | p-value =", formatC(out$pretrend_slope$p_val, digits = 2, format = "f")),
-        x = "Estimated Pretrend Slope",
-        y = "Frequency"
+        x = "Estimated Pretrend Slope", y = "Frequency"
       ) +
       theme_minimal(base_size = 14)
   }
@@ -490,26 +502,26 @@ DiD_ri <- function(df, # Input dataframe
 DiD_ri(df = df, al_treat_groups = al_treat_groups, # Note beach closures on 8/3 that seem to have a negative impact on visitation
        mode = "daily", dates = seq(as.Date("2024-07-09"), as.Date("2024-08-05"), by = "day"), date_range = as.Date(c("2024-06-15", "2024-08-15")),
        model_formula = visits ~ treat_post | id + date,
-       perm_unit = "spatial_cluster", n_perm = 100, treated_city = "Nantucket", seed = 123, return_plot = TRUE)
+       perm_unit = "spatial_cluster", n_perm = 100, treated_ids = df %>% filter(City == "Nantucket") %>% distinct(id) %>% pull(), seed = 123, return_plot = TRUE)
 
 outv<-DiD_ri(df = df, al_treat_groups = al_treat_groups,
        mode = "window", dates = as.Date(c("2024-07-16", "2024-07-17")), date_range = as.Date(c("2024-06-15", "2024-07-30")),
        model_formula = visits ~ treat_post | id + date,
-       perm_unit = "spatial_cluster", n_perm = 500, treated_city = "Nantucket", seed = 123, return_plot = TRUE)
+       perm_unit = "spatial_cluster", n_perm = 500, treated_ids = df %>% filter(City == "Nantucket") %>% distinct(id) %>% pull(), seed = 123, return_plot = TRUE)
 
 total_effectv<-round(as.numeric(outv$summary$estimate)*2*length(unique(df %>% filter(City == "Nantucket") %>% pull(id)))*cf*cvf,0)
 
 outvh<-DiD_ri(df = df, al_treat_groups = al_treat_groups,
              mode = "window", dates = as.Date(c("2024-07-16", "2024-07-17")), date_range = as.Date(c("2024-06-15", "2024-07-30")),
              model_formula = visitorhours ~ treat_post | id + date,
-             perm_unit = "spatial_cluster", n_perm = 500, treated_city = "Nantucket", seed = 123, return_plot = TRUE)
+             perm_unit = "spatial_cluster", n_perm = 500, treated_ids = df %>% filter(City == "Nantucket") %>% distinct(id) %>% pull(), seed = 123, return_plot = TRUE)
 
 total_effectvh<-round(as.numeric(outvh$summary$estimate)*2*length(unique(df %>% filter(City == "Nantucket") %>% pull(id)))*cf*cvhf,0)
 
 # DiD_ri(df = df %>% filter(!is.na(hourspervisit)), al_treat_groups = al_treat_groups, # Hours per visit did not appear to change on the pollution date and shortly thereafter
 #        mode = "daily", dates = seq(as.Date("2024-07-09"), as.Date("2024-07-29"), by = "day"), date_range = as.Date(c("2024-06-15", "2024-07-30")),
 #        model_formula = hourspervisit ~ treat_post | id + date,
-#        perm_unit = "spatial_cluster", n_perm = 100, treated_city = "Nantucket", seed = 123, return_plot = TRUE)
+#        perm_unit = "spatial_cluster", n_perm = 100, treated_ids = df %>% filter(City == "Nantucket") %>% distinct(id) %>% pull(), seed = 123, return_plot = TRUE)
 
 
 # Robustness tests --------------------------------------------------------
@@ -517,7 +529,8 @@ total_effectvh<-round(as.numeric(outvh$summary$estimate)*2*length(unique(df %>% 
 ptoutvd<-DiD_ri(df = df, al_treat_groups = al_treat_groups, # Note beach closures on 8/3 that seem to have a negative impact on visitation
                mode = "daily", dates = seq(as.Date("2024-06-15"), as.Date("2024-07-15"), by = "day"), date_range = as.Date(c("2024-06-15", "2024-07-15")), 
                model_formula = visits ~ treat_post | id + date,
-               perm_unit = "spatial_cluster", n_perm = 500, treated_city = "Nantucket", seed = 123, return_plot = TRUE, test_pretrends = FALSE)
+               perm_unit = "spatial_cluster", n_perm = 500, treated_ids = df %>% filter(City == "Nantucket") %>% distinct(id) %>% pull(), seed = 123, return_plot = TRUE, 
+               pretrend_formula = NULL)
 
 ptoutvd$summary %>% filter(as.Date(label) < as.Date("2024-07-16")) %>% print(n = nrow(.)) # Daily treatment impacts for days in the pre-period 
 
@@ -525,14 +538,15 @@ ptoutvd$summary %>% filter(as.Date(label) < as.Date("2024-07-16")) %>% print(n =
 ptoutvp<-DiD_ri(df = df, al_treat_groups = al_treat_groups, 
                 mode = "window", dates = as.Date(c("2024-07-14", "2024-07-15")), date_range = as.Date(c("2024-06-15", "2024-07-30")), 
                 model_formula = visits ~ treat_post | id + date,
-                perm_unit = "spatial_cluster", n_perm = 500, treated_city = "Nantucket", seed = 123, return_plot = TRUE, test_pretrends = FALSE)
+                perm_unit = "spatial_cluster", n_perm = 500, treated_ids = df %>% filter(City == "Nantucket") %>% distinct(id) %>% pull(), seed = 123, return_plot = TRUE,
+                pretrend_formula = NULL)
 ptoutvp$plot
 
 # Time interaction for parallel trends
 ptoutvpt<-DiD_ri(df = df, al_treat_groups = al_treat_groups, 
                 mode = "window", dates = as.Date(c("2024-07-16", "2024-07-17")), date_range = as.Date(c("2024-06-15", "2024-07-30")), 
                 model_formula = visits ~ treat_post | id + date,
-                perm_unit = "spatial_cluster", n_perm = 500, treated_city = "Nantucket", seed = 123, return_plot = TRUE, 
+                perm_unit = "spatial_cluster", n_perm = 500, treated_ids = df %>% filter(City == "Nantucket") %>% distinct(id) %>% pull(), seed = 123, return_plot = TRUE, 
                 pretrend_formula = visits ~ time + treated:time | id)
 ptoutvpt$pretrend_slope
 ptoutvpt$pretrend_plot
