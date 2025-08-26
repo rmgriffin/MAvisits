@@ -122,7 +122,8 @@ ggplot(ms, aes(x = Enplanements, y = counts_enplaned)) +
   facet_wrap(~ year) +
   theme_minimal() 
 
-cf<-ms %>% filter(month_year == "2024-07") %>% select(ratio_enplaned) %>% as.numeric() # Conversion factor for July 2024
+cfj<-ms %>% filter(month_year == "2024-07") %>% select(ratio_enplaned) %>% as.numeric() # Conversion factor for July 2024
+cfa<-ms %>% filter(month_year == "2024-08") %>% select(ratio_enplaned) %>% as.numeric() # Conversion factor for August 2024
 
 rm(r2_labels)
 
@@ -288,7 +289,7 @@ DiD_ri <- function(df, # Input dataframe
                    mode = c("window", "daily"), # Estimate treatment effect for a window of time, or a series of days
                    dates, # Treatment window dates for "daily" (seq(as.Date("2024-07-15"), as.Date("2024-07-31"), by = "day")) or "window" (as.Date(c("2024-07-16", "2024-07-27")))
                    model_formula, # Formula for model written as FEOLS model 
-                   perm_unit = "spatial_cluster", # Choice of grouping for randomization permutation. Options {"spatial_cluster", "id"}
+                   perm_unit = c("spatial_cluster","id"), # Choice of grouping for randomization permutation. Options {"spatial_cluster", "id"}
                    n_perm = 1000, # Number of permutations for randomization inference
                    treated_ids, # Ids for treated beaches
                    return_plot = FALSE, # Return plot of permutation distribution and treatment effect
@@ -509,14 +510,14 @@ outv<-DiD_ri(df = df, al_treat_groups = al_treat_groups,
        model_formula = visits ~ treat_post | id + date,
        perm_unit = "spatial_cluster", n_perm = 500, treated_ids = df %>% filter(City == "Nantucket") %>% distinct(id) %>% pull(), seed = 123, return_plot = TRUE)
 
-total_effectv<-round(as.numeric(outv$summary$estimate)*2*length(unique(df %>% filter(City == "Nantucket") %>% pull(id)))*cf*cvf,0)
+total_effectv<-round(as.numeric(outv$summary$estimate)*2*length(unique(df %>% filter(City == "Nantucket") %>% pull(id)))*cfj*cvf,0) # 2 is for two treated days
 
 outvh<-DiD_ri(df = df, al_treat_groups = al_treat_groups,
              mode = "window", dates = as.Date(c("2024-07-16", "2024-07-17")), date_range = as.Date(c("2024-06-15", "2024-07-30")),
              model_formula = visitorhours ~ treat_post | id + date,
              perm_unit = "spatial_cluster", n_perm = 500, treated_ids = df %>% filter(City == "Nantucket") %>% distinct(id) %>% pull(), seed = 123, return_plot = TRUE)
 
-total_effectvh<-round(as.numeric(outvh$summary$estimate)*2*length(unique(df %>% filter(City == "Nantucket") %>% pull(id)))*cf*cvhf,0)
+total_effectvh<-round(as.numeric(outvh$summary$estimate)*2*length(unique(df %>% filter(City == "Nantucket") %>% pull(id)))*cfj*cvhf,0) # 2 is for two treated days
 
 # DiD_ri(df = df %>% filter(!is.na(hourspervisit)), al_treat_groups = al_treat_groups, # Hours per visit did not appear to change on the pollution date and shortly thereafter
 #        mode = "daily", dates = seq(as.Date("2024-07-09"), as.Date("2024-07-29"), by = "day"), date_range = as.Date(c("2024-06-15", "2024-07-30")),
@@ -551,6 +552,27 @@ ptoutvpt<-DiD_ri(df = df, al_treat_groups = al_treat_groups,
 ptoutvpt$pretrend_slope
 ptoutvpt$pretrend_plot
 
+
+# DiD model August 3 closure ----------------------------------------------
+closed_ids_803<-c(201,195,199,193)
+out_closure <- DiD_ri(
+  df = df,
+  al_treat_groups = NULL,                  # not used (perm_unit = "id")
+  mode = "window",                         # use "window" so the pretrend block can run
+  dates = as.Date("2024-08-03"),           # single-day window is fine
+  model_formula = visits ~ treat_post | id + date,
+  perm_unit = "id",
+  n_perm = 1000,
+  treated_ids = closed_ids_803,
+  #treated_ids = df %>% filter(City == "Nantucket") %>% distinct(id) %>% pull(),
+  date_range = as.Date(c("2024-08-01","2024-08-15")),  
+  pretrend_formula = visits ~ time + time:treated | id, 
+  return_plot = TRUE,
+  seed = 123
+)
+
+total_effect803v1<-round(as.numeric(out_closure$summary$estimate)*length(unique(df %>% filter(City == "Nantucket") %>% pull(id)))*cfa*cvf,0) # One day
+total_effect803v2<-round(as.numeric(out_closure$summary$estimate)*2*length(unique(df %>% filter(City == "Nantucket") %>% pull(id)))*cfa*cvf,0) # Two days
 
 
 
