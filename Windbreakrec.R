@@ -122,6 +122,7 @@ ggplot(ms, aes(x = Enplanements, y = counts_enplaned)) +
   facet_wrap(~ year) +
   theme_minimal() 
 
+cfn<-ms %>% filter(month_year == "2024-06") %>% select(ratio_enplaned) %>% as.numeric() # Conversion factor for June 2024
 cfj<-ms %>% filter(month_year == "2024-07") %>% select(ratio_enplaned) %>% as.numeric() # Conversion factor for July 2024
 cfa<-ms %>% filter(month_year == "2024-08") %>% select(ratio_enplaned) %>% as.numeric() # Conversion factor for August 2024
 
@@ -282,6 +283,59 @@ df$hourspervisit<-df$visitorhours/df$visits # Hours per visit
 
 rm(wth,full_grid,valid_dates,meta)
 
+
+
+# Descriptive statistics --------------------------------------------------
+df_nt <- df %>% # Daily visitation calibrated using enplanement data
+  filter(City == "Nantucket",year == 2024) %>%
+  group_by(date) %>%
+  summarise(totalcellvisits = sum(visits, na.rm = TRUE), .groups = "drop") %>% 
+  mutate(mon = month(date),
+         totalvisits = case_when(mon == 6 ~ cfn*totalcellvisits*cvf,
+                                 mon == 7 ~ cfj*totalcellvisits*cvf,
+                                 mon == 8 ~ cfa*totalcellvisits*cvf,
+                                 TRUE ~ NA))
+
+ggplot(df_nt, aes(x = date, y = totalvisits)) +
+  geom_line() +
+  labs(
+    title = "Total Daily Beach Visits — Nantucket",
+    subtitle = "June–August 2024",
+    x = "Date",
+    y = "Total visits"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(panel.grid.minor = element_blank())
+
+cflc<-df %>% filter(year == 2024 & Name %in% c("Cisco/Ladies Beach","Children's Beach","Jetties Beach","Dionis Beach","Madaket Beach","Miacomet Beach","Surfside Beach","Nobadeer Beach","Sconset Beach")) %>%
+  summarise(meanvisits = mean(visits,na.rm = TRUE)*9) %>% pull() # Calibration factor using lifeguard counts (assuming same daily average for the 5 missing days)
+cflc<-(304609/54)/cflc
+
+df_nt <- df %>% # Daily visitation calibrated using lifeguard counts
+  filter(City == "Nantucket",year == 2024) %>%
+  group_by(date) %>%
+  summarise(totalcellvisits = sum(visits, na.rm = TRUE), .groups = "drop") %>% 
+  mutate(totalvisits = cflc*totalcellvisits)
+
+ggplot(df_nt, aes(x = date, y = totalvisits)) +
+  geom_line() +
+  labs(
+    title = "Total Daily Beach Visits — Nantucket",
+    subtitle = "June–August 2024",
+    x = "Date",
+    y = "Total visits"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(panel.grid.minor = element_blank())
+
+df %>% filter (year == 2024 & City == "Nantucket") %>% # Ratio of cell device days from lifeguarded beaches to overall beach cell device days on Nantucket
+  summarise(
+    ratio = sum(visits[Name %in% c("Cisco/Ladies Beach","Children's Beach","Jetties Beach",
+                                   "Dionis Beach","Madaket Beach","Miacomet Beach",
+                                   "Surfside Beach","Nobadeer Beach","Sconset Beach")],
+                na.rm = TRUE) /
+      sum(visits, na.rm = TRUE)
+  )
 
 # DiD visitation model, Nantucket main impact --------------------------------------------------------
 DiD_ri <- function(df, # Input dataframe
@@ -499,6 +553,9 @@ DiD_ri <- function(df, # Input dataframe
   
   return(out)
 }
+
+### Look at decreasing the date range and increasing the permutations
+
 
 DiD_ri(df = df, al_treat_groups = al_treat_groups, # Note beach closures on 8/3 that seem to have a negative impact on visitation
        mode = "daily", dates = seq(as.Date("2024-07-09"), as.Date("2024-08-05"), by = "day"), date_range = as.Date(c("2024-06-15", "2024-08-15")),
