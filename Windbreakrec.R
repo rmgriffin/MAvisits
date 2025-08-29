@@ -337,6 +337,26 @@ df %>% filter (year == 2024 & City == "Nantucket") %>% # Ratio of cell device da
       sum(visits, na.rm = TRUE)
   )
 
+dfs %>% # Mean number of beaches visited per day per device (systematic behavior change due to pollution?)
+  distinct(DEVICEID, DAY_IN_FEATURE, id) %>%
+  count(DEVICEID, DAY_IN_FEATURE, name = "n") %>%
+  group_by(DAY_IN_FEATURE) %>%
+  summarise(
+    mean_n = mean(n),
+    se = sd(n) / sqrt(n()),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    ci_lower = mean_n - 1.96 * se,
+    ci_upper = mean_n + 1.96 * se
+  ) %>%
+  ggplot(aes(x = as.Date(DAY_IN_FEATURE), y = mean_n)) +
+  geom_line() +
+  geom_point() +
+  geom_ribbon(aes(ymin = ci_lower, ymax = ci_upper), alpha = 0.2, fill = "steelblue") +
+  labs(x = "Day", y = "Mean unique beaches visited per day per device") + # title = "Daily mean with 95% confidence interval"
+  theme_minimal()
+
 # DiD visitation model, Nantucket main impact --------------------------------------------------------
 DiD_ri <- function(df, # Input dataframe
                    al_treat_groups, # Potential groups of affected beaches for randomization inference, only used if perm_unit == "spatial_cluster"
